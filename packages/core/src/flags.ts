@@ -23,6 +23,8 @@ export const STALLED_METERS = 20;
 
 const EARTH_RADIUS_KM = 6371;
 const MS_PER_MINUTE = 60_000;
+/** Placeholder: longest silence between pings that still counts as live signal. */
+export const MAX_GPS_GAP_MS = 3 * MS_PER_MINUTE;
 const toRad = (deg: number): number => (deg * Math.PI) / 180;
 
 const isValid = (p: LatLng): boolean =>
@@ -75,25 +77,35 @@ interface TimedPoint extends LatLng {
   time: number;
 }
 
-/** True when some stretch of at least STALLED_MINUTES stays within STALLED_METERS of its first point. */
-function hasStall(points: TimedPoint[]): boolean {
-  return points.some((start, i) => {
-    for (const next of points.slice(i + 1)) {
-      if (haversineKm(start, next) * 1000 >= STALLED_METERS) return false;
-      if (next.time - start.time >= STALLED_MINUTES * MS_PER_MINUTE) return true;
-    }
-    return false;
-  });
+/**
+ * True when the rider is stopped right now: the stretch of pings ending at the
+ * latest ping stays within STALLED_METERS of it, has no gap over MAX_GPS_GAP_MS
+ * (no data is not the same as stopped), spans STALLED_MINUTES or more, and the
+ * latest ping is within MAX_GPS_GAP_MS of now.
+ */
+function isStalledNow(points: TimedPoint[], now: number): boolean {
+  const last = points[points.length - 1];
+  if (last === undefined || Number.isNaN(now) || now - last.time > MAX_GPS_GAP_MS) return false;
+  let start = last;
+  for (let i = points.length - 2; i >= 0; i -= 1) {
+    const p = points[i];
+    const after = points[i + 1];
+    if (p === undefined || after === undefined) break;
+    if (after.time - p.time > MAX_GPS_GAP_MS) break;
+    if (haversineKm(p, last) * 1000 >= STALLED_METERS) break;
+    start = p;
+  }
+  return last.time - start.time >= STALLED_MINUTES * MS_PER_MINUTE;
 }
 
 /**
  * Flags for a rider's GPS trail against the planned stops. Pure: the trail is
  * copied before sorting. Invalid coordinates and unparseable times are
  * ignored. Each flag appears at most once, ordered off_route, stalled, late.
- * `nowIso` is accepted for the contract but unused until a deadline input
- * exists (see Flag).
+ * `nowIso` is used to confirm a stall is happening now; unparseable means no
+ * stall flag.
  */
-export function routeFlags(trail: GpsPoint[], plannedStops: LatLng[], _nowIso: string): Flag[] {
+export function routeFlags(trail: GpsPoint[], plannedStops: LatLng[], nowIso: string): Flag[] {
   const points: TimedPoint[] = trail
     .map((p) => ({ lat: p.lat, lng: p.lng, time: Date.parse(p.at) }))
     .filter((p) => isValid(p) && !Number.isNaN(p.time))
@@ -104,6 +116,6 @@ export function routeFlags(trail: GpsPoint[], plannedStops: LatLng[], _nowIso: s
   if (stops.length > 0 && points.some((p) => distanceToRouteKm(p, stops) > OFF_ROUTE_KM)) {
     flags.push('off_route');
   }
-  if (hasStall(points)) flags.push('stalled');
+  if (isStalledNow(points, Date.parse(nowIso))) flags.push('stalled');
   return flags;
 }
