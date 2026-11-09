@@ -64,9 +64,10 @@ const eventBody = z.object({ type: z.enum(EVENT_TYPES), photoUrl: httpsUrl.optio
 
 /** Which events each role may record through the API. Delivery is only possible with the code. */
 const ROLE_EVENTS: Record<Role, readonly EventType[]> = {
-  shop: ['sealed', 'cancelled', 'reported_lost'],
-  rider: ['pickup_confirmed', 'in_transit', 'refused_by_rider', 'reported_lost', 'cancelled'],
-  admin: ['cancelled', 'reported_lost'],
+  // reported_lost is deliberately absent: it must go through POST /parcels/:id/report-lost, which settles the loss.
+  shop: ['sealed', 'cancelled'],
+  rider: ['pickup_confirmed', 'in_transit', 'refused_by_rider', 'cancelled'],
+  admin: ['cancelled'],
 };
 const ACTOR_OF: Record<Role, CustodyEvent['actor']> = { shop: 'shop', rider: 'rider', admin: 'tuma' };
 

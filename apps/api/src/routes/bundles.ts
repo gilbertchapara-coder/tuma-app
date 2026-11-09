@@ -85,7 +85,8 @@ export const bundleRoutes =
         if (!b.rows[0]) throw new HttpError(404, 'not_found', 'Bundle not found');
         if (b.rows[0].status !== 'open') throw new HttpError(409, 'taken', 'Another rider already took this bundle');
 
-        const { stats, entries } = await lockRider(tx, riderId);
+        const { stats, entries, removed } = await lockRider(tx, riderId);
+        if (removed) throw new HttpError(403, 'rider_removed', 'Your rider account is suspended, contact Tuma support');
         // Then the bundle's parcel rows, ordered by id, so a concurrent cancel/lost either lands first
         // (parcel no longer sealed, skipped below) or waits until this accept commits.
         await tx.query(

@@ -5,7 +5,10 @@ import { assertSecret } from './auth';
 import { HttpError } from './errors';
 import type { CodeNotifier, OtpProvider } from './ports';
 import { authRoutes } from './routes/auth';
+import { bindFlagJobPool } from './jobs/flagJob';
 import { bundleRoutes } from './routes/bundles';
+import { claimRoutes } from './routes/claims';
+import { locationRoutes } from './routes/location';
 import { codeRoutes } from './routes/codes';
 import { parcelRoutes } from './routes/parcels';
 import { riderRoutes } from './routes/riders';
@@ -82,5 +85,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(parcelRoutes(deps));
   await app.register(bundleRoutes(deps));
   await app.register(codeRoutes(deps));
+  await app.register(claimRoutes(deps));
+  await app.register(locationRoutes(deps));
+  bindFlagJobPool(deps.pool);
   return app;
 }

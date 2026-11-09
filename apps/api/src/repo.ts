@@ -66,15 +66,15 @@ const statsOf = (r: RiderRow, entries: readonly Entry[]): RiderStats => ({
 });
 
 /** Locks the rider row (serialises everything that moves this rider's float) and returns their stats. */
-export async function lockRider(db: Db, riderId: string): Promise<{ stats: RiderStats; entries: Entry[] }> {
-  const { rows } = await db.query<RiderRow>(
-    'SELECT verified, has_guarantor, clean_deliveries, rating FROM riders WHERE user_id = $1 FOR UPDATE',
+export async function lockRider(db: Db, riderId: string): Promise<{ stats: RiderStats; entries: Entry[]; removed: boolean }> {
+  const { rows } = await db.query<RiderRow & { status: string }>(
+    'SELECT verified, has_guarantor, clean_deliveries, rating, status FROM riders WHERE user_id = $1 FOR UPDATE',
     [riderId],
   );
   const r = rows[0];
   if (!r) throw new HttpError(404, 'not_found', 'Rider not found');
   const entries = await loadEntries(db, riderId);
-  return { entries, stats: statsOf(r, entries) };
+  return { entries, stats: statsOf(r, entries), removed: r.status === 'removed' };
 }
 
 export async function riderSummary(db: Db, riderId: string): Promise<{ tier: Tier; balanceCents: number; depositCents: number }> {

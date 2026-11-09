@@ -20,6 +20,8 @@ const accept = (parcelBundle: string, token: string) =>
   ctx.app.inject({ method: 'POST', url: `/bundles/${parcelBundle}/accept`, headers: auth(token) });
 const event = (parcelId: string, token: string, type: string, photoUrl?: string) =>
   ctx.app.inject({ method: 'POST', url: `/parcels/${parcelId}/events`, headers: auth(token), payload: { type, photoUrl } });
+const lost = (parcelId: string, token: string) =>
+  ctx.app.inject({ method: 'POST', url: `/parcels/${parcelId}/report-lost`, headers: auth(token), payload: {} });
 const deliver = (parcelId: string, token: string, code: string) =>
   ctx.app.inject({ method: 'POST', url: `/parcels/${parcelId}/deliver`, headers: auth(token), payload: { code } });
 const ledger = async (riderId: string, type: string) =>
@@ -81,7 +83,7 @@ describe('2. deliver vs reported_lost race', () => {
   it('never leaves two terminal events in the chain', async () => {
     for (let i = 0; i < 6; i += 1) {
       const { p, rider, code } = await pickedUp();
-      const [d, l] = await Promise.all([deliver(p.parcelId, rider.token, code), event(p.parcelId, rider.token, 'reported_lost')]);
+      const [d, l] = await Promise.all([deliver(p.parcelId, rider.token, code), lost(p.parcelId, rider.token)]);
       expect([d.statusCode, l.statusCode].filter((s) => s === 200 || s === 201)).toHaveLength(1);
       expect(await terminalCount(p.parcelId)).toBe(1);
     }
@@ -92,39 +94,39 @@ describe('3. who may end a parcel', () => {
   it('before pickup: shop and admin may cancel or report lost', async () => {
     const admin = await ctx.adminToken();
     const a = await book(ctx, shop.token, { level: 'express' });
-    expect((await event(a.parcelId, shop.token, 'reported_lost')).statusCode).toBe(201);
+    expect((await lost(a.parcelId, shop.token)).statusCode).toBe(201);
     const b = await book(ctx, shop.token, { level: 'express' });
     expect((await event(b.parcelId, admin, 'cancelled')).statusCode).toBe(201);
     const c = await book(ctx, shop.token, { level: 'express' });
-    expect((await event(c.parcelId, admin, 'reported_lost')).statusCode).toBe(201);
+    expect((await lost(c.parcelId, admin)).statusCode).toBe(201);
   });
 
-  it('after pickup_confirmed: shop and admin get 409, the assigned rider may report lost', async () => {
+  it('after pickup_confirmed: shop and admin cannot cancel (409), a shop loss claim only opens a claim, the assigned rider may report lost', async () => {
     const admin = await ctx.adminToken();
     const { p, rider } = await pickedUp();
-    for (const t of ['reported_lost', 'cancelled']) {
-      expect((await event(p.parcelId, shop.token, t)).statusCode).toBe(409);
-      expect((await event(p.parcelId, admin, t)).statusCode).toBe(409);
-    }
+    expect((await event(p.parcelId, shop.token, 'cancelled')).statusCode).toBe(409);
+    expect((await event(p.parcelId, admin, 'cancelled')).statusCode).toBe(409);
+    // A shop claim after pickup is only a review request: no custody event.
+    expect((await lost(p.parcelId, shop.token)).statusCode).toBe(202);
     expect(await terminalCount(p.parcelId)).toBe(0);
-    expect((await event(p.parcelId, rider.token, 'reported_lost')).statusCode).toBe(201);
+    expect((await lost(p.parcelId, rider.token)).statusCode).toBe(201);
   });
 
-  it('after in_transit: shop and admin get 409, the assigned rider may report lost', async () => {
+  it('after in_transit: shop and admin cannot cancel (409), a shop loss claim only opens a claim, the assigned rider may report lost', async () => {
     const admin = await ctx.adminToken();
     const { p, rider } = await pickedUp();
     expect((await event(p.parcelId, rider.token, 'in_transit')).statusCode).toBe(201);
-    for (const t of ['reported_lost', 'cancelled']) {
-      expect((await event(p.parcelId, shop.token, t)).statusCode).toBe(409);
-      expect((await event(p.parcelId, admin, t)).statusCode).toBe(409);
-    }
-    expect((await event(p.parcelId, rider.token, 'reported_lost')).statusCode).toBe(201);
+    expect((await event(p.parcelId, shop.token, 'cancelled')).statusCode).toBe(409);
+    expect((await event(p.parcelId, admin, 'cancelled')).statusCode).toBe(409);
+    // A shop claim after pickup is only a review request: no custody event.
+    expect((await lost(p.parcelId, shop.token)).statusCode).toBe(202);
+    expect((await lost(p.parcelId, rider.token)).statusCode).toBe(201);
   });
 
   it('a different rider cannot end it either', async () => {
     const { p } = await pickedUp();
     const other = await makeRider(ctx, nextPhone('8'), { topupCents: 100 });
-    expect((await event(p.parcelId, other.token, 'reported_lost')).statusCode).toBe(403);
+    expect((await lost(p.parcelId, other.token)).statusCode).toBe(403);
   });
 });
 
