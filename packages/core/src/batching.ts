@@ -4,6 +4,7 @@ export interface BookedParcel {
   id: string;
   suburb: string;
   level: ServiceLevel;
+  /** ISO 8601 timestamp. An unparseable value makes bundleRuns throw InvalidDateError. */
   bookedAt: string;
 }
 
@@ -18,6 +19,19 @@ export interface Bundle {
 /** Distance rank of a band label ("2 km", "4 to 5 km"): its lower bound in km. */
 const bandDistance = (band: string): number => Number.parseFloat(band);
 
+export class InvalidDateError extends Error {
+  constructor(field: 'bookedAt' | 'cutoffAt', value: string) {
+    super(`Invalid ${field} (expected ISO 8601): ${JSON.stringify(value)}`);
+    this.name = 'InvalidDateError';
+  }
+}
+
+function parseDate(field: 'bookedAt' | 'cutoffAt', value: string): number {
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) throw new InvalidDateError(field, value);
+  return time;
+}
+
 type PoolLevel = Bundle['level'];
 
 const LEVEL_ORDER: Record<PoolLevel, number> = { standard: 0, overnight: 1 };
@@ -26,14 +40,17 @@ const RUN_ORDER: Record<Run, number> = { north: 0, south: 1, southwest: 2 };
 /**
  * Groups standard and overnight parcels booked at or before `cutoffAt` into
  * bundles by (run, level). Express parcels never pool. Pure: inputs are not mutated.
+ * `cutoffAt` and every `bookedAt` must be ISO 8601; all dates are validated before
+ * grouping, and an unparseable one throws InvalidDateError (no partial result).
  */
 export function bundleRuns(parcels: BookedParcel[], cutoffAt: string): Bundle[] {
-  const cutoff = Date.parse(cutoffAt);
+  const cutoff = parseDate('cutoffAt', cutoffAt);
+  const bookedTimes = parcels.map((parcel) => parseDate('bookedAt', parcel.bookedAt));
   const groups = new Map<string, { run: Run; level: PoolLevel; ids: string[]; drops: Map<string, number> }>();
 
-  for (const parcel of parcels) {
+  for (const [index, parcel] of parcels.entries()) {
     if (parcel.level === 'express') continue;
-    if (!(Date.parse(parcel.bookedAt) <= cutoff)) continue;
+    if ((bookedTimes[index] as number) > cutoff) continue;
     const { name, suburb } = findSuburbEntry(parcel.suburb);
     const key = `${suburb.run}|${parcel.level}`;
     let group = groups.get(key);

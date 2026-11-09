@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bundleRuns, type BookedParcel } from '../src/batching';
+import { bundleRuns, InvalidDateError, type BookedParcel } from '../src/batching';
 import { UnknownSuburbError } from '../src/pricing';
 
 const CUTOFF = '2026-11-10T12:00:00Z';
@@ -69,5 +69,30 @@ describe('bundleRuns', () => {
     const copy = structuredClone(input);
     bundleRuns(input, CUTOFF);
     expect(input).toEqual(copy);
+  });
+
+  it('throws InvalidDateError for an unparseable bookedAt, even on a later parcel', () => {
+    const input = [p('a', 'Mbare'), p('b', 'Avenues', 'standard', 'not-a-date')];
+    expect(() => bundleRuns(input, CUTOFF)).toThrow(InvalidDateError);
+    expect(() => bundleRuns(input, CUTOFF)).toThrow(/bookedAt.*not-a-date/);
+  });
+
+  it('throws InvalidDateError for an unparseable bookedAt on an express parcel', () => {
+    expect(() => bundleRuns([p('a', 'Mbare', 'express', '')], CUTOFF)).toThrow(InvalidDateError);
+  });
+
+  it('throws InvalidDateError for an unparseable cutoffAt', () => {
+    expect(() => bundleRuns([p('a', 'Mbare')], 'tomorrow-ish')).toThrow(InvalidDateError);
+    expect(() => bundleRuns([p('a', 'Mbare')], 'tomorrow-ish')).toThrow(/cutoffAt.*tomorrow-ish/);
+  });
+
+  it('skips a late valid parcel and an express parcel without error', () => {
+    const out = bundleRuns(
+      [p('a', 'Mbare'), p('b', 'Mbare', 'standard', after), p('c', 'Mbare', 'express')],
+      CUTOFF,
+    );
+    expect(out).toEqual([
+      { run: 'southwest', level: 'standard', parcelIds: ['a'], dropOrder: ['Mbare'] },
+    ]);
   });
 });
