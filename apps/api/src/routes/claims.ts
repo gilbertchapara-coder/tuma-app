@@ -22,7 +22,7 @@ const MAX_LOCK_RETRIES = 3;
 const BEFORE_PICKUP = ['booked', 'sealed', 'refused_by_rider'];
 const ACTOR_OF: Record<Role, CustodyEvent['actor']> = { shop: 'shop', rider: 'rider', admin: 'tuma' };
 
-const claimsQuery = z.object({ status: z.enum(['open', 'settled']).default('open') }).strict();
+const claimsQuery = z.object({ status: z.enum(['open', 'settled', 'dismissed', 'closed']).default('open') }).strict();
 
 type Outcome =
   | { kind: 'retry' }
@@ -56,6 +56,9 @@ async function reportLost(tx: pg.PoolClient, id: string, user: { id: string; rol
   const events = await loadEvents(tx, id);
   const last = events[events.length - 1]?.type;
   const existing = (await tx.query('SELECT status, liable, payout_cents FROM claims WHERE parcel_id = $1', [id])).rows[0];
+  if (user.role === 'shop' && (existing?.status === 'dismissed' || existing?.status === 'closed')) {
+    throw new HttpError(409, 'claim_closed', 'This claim was already reviewed');
+  }
 
   if (last === 'reported_lost') {
     // Already ended: return the first result. A shop only ever sees its own parcel here (404 above otherwise).
@@ -138,6 +141,23 @@ export const claimRoutes =
           createdAt: r.created_at.toISOString(),
         })),
       };
+    });
+
+    // Rejects a claim after review: no payout, no custody event.
+    app.post('/claims/:id/dismiss', { preHandler: admin }, async (req) => {
+      const { id } = parse(uuidParam, req.params);
+      return withTx(deps.pool, async (tx) => {
+        const claim = (await tx.query('SELECT parcel_id FROM claims WHERE id = $1', [id])).rows[0];
+        if (!claim) throw new HttpError(404, 'not_found', 'Claim not found');
+        // Parcel lock first, like every other custody change, so it cannot interleave with a settle.
+        await tx.query('SELECT 1 FROM parcels WHERE id = $1 FOR UPDATE', [claim.parcel_id]);
+        const res = await tx.query(
+          `UPDATE claims SET status = 'dismissed', settled_at = now() WHERE id = $1 AND status = 'open'`,
+          [id],
+        );
+        if (res.rowCount === 0) throw new HttpError(409, 'not_open', 'Only an open claim can be dismissed');
+        return { status: 'dismissed' };
+      });
     });
 
     app.post('/admin/run-flag-job', { preHandler: admin }, async () => ({ raised: await runFlagJob(new Date(), deps.pool) }));

@@ -62,6 +62,8 @@ export const codeRoutes =
           return { kind: 'wrong', attemptsLeft: Math.max(0, 3 - result.record.failedAttempts) };
         }
         await insertEvent(tx, id, delivered);
+        // A delivered parcel ends any open loss claim against the rider.
+        await tx.query("UPDATE claims SET status = 'closed', settled_at = now() WHERE parcel_id = $1 AND status = 'open'", [id]);
         return { kind: 'delivered' };
       });
 

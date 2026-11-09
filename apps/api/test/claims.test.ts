@@ -28,17 +28,18 @@ const lossPaid = async (riderId: string) =>
 const riderStatus = async (riderId: string) =>
   (await ctx.pool.query('SELECT status FROM riders WHERE user_id=$1', [riderId])).rows[0].status as string;
 
-async function accepted(opts: { valueCents?: number; topupCents?: number; depositCents?: number } = {}) {
+async function accepted(opts: { valueCents?: number; topupCents?: number; depositCents?: number; suburb?: string } = {}) {
   const phone = nextPhone('5');
   const p = await book(ctx, shop.token, {
     level: 'express',
+    suburb: opts.suburb ?? 'Avenues',
     valueCents: opts.valueCents ?? 1500,
     recipientPhone: phone,
     recipientPhoneConfirm: phone,
   });
   const rider = await makeRider(ctx, nextPhone('6'), { topupCents: opts.topupCents ?? 500, depositCents: opts.depositCents ?? 2000 });
   expect((await accept(await bundleOf(p.parcelId), rider.token)).statusCode).toBe(200);
-  return { p, rider };
+  return { p, rider, phone };
 }
 async function pickedUp(opts: Parameters<typeof accepted>[0] = {}) {
   const a = await accepted(opts);
@@ -145,7 +146,54 @@ describe('POST /parcels/:id/report-lost', () => {
   });
 });
 
-describe('location pings and runFlagJob', () => {
+
+describe('claim dismissal and auto-close', () => {
+  it('admin dismisses an open claim: no payout, no event; only once; shop cannot', async () => {
+    const { p, rider } = await pickedUp();
+    expect((await lost(p.parcelId, shop.token)).statusCode).toBe(202);
+    const admin = await ctx.adminToken();
+    const id = (await ctx.pool.query('SELECT id FROM claims WHERE parcel_id=$1', [p.parcelId])).rows[0].id as string;
+    const dismiss = (token: string) => ctx.app.inject({ method: 'POST', url: `/claims/${id}/dismiss`, headers: auth(token) });
+    expect((await dismiss(shop.token)).statusCode).toBe(403);
+    const res = await dismiss(admin);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'dismissed' });
+    expect(await lastEvent(p.parcelId)).toBe('pickup_confirmed');
+    expect(await lossPaid(rider.id)).toBe(0);
+    expect((await dismiss(admin)).statusCode).toBe(409);
+    const open = await ctx.app.inject({ method: 'GET', url: '/claims?status=open', headers: auth(admin) });
+    expect(open.json().claims.filter((c: { parcelId: string }) => c.parcelId === p.parcelId)).toHaveLength(0);
+    expect(
+      (await ctx.app.inject({ method: 'POST', url: '/claims/00000000-0000-4000-8000-000000000000/dismiss', headers: auth(admin) })).statusCode,
+    ).toBe(404);
+    // The shop cannot reopen a dismissed claim.
+    expect((await lost(p.parcelId, shop.token)).statusCode).toBe(409);
+  });
+
+  it('an open claim closes itself when the parcel is delivered', async () => {
+    const { p, rider, phone } = await pickedUp();
+    expect((await lost(p.parcelId, shop.token)).statusCode).toBe(202);
+    const code = ctx.notifier.codes.get(phone) as string;
+    const d = await ctx.app.inject({ method: 'POST', url: `/parcels/${p.parcelId}/deliver`, headers: auth(rider.token), payload: { code } });
+    expect(d.statusCode).toBe(200);
+    const row = (await ctx.pool.query('SELECT status FROM claims WHERE parcel_id=$1', [p.parcelId])).rows[0];
+    expect(row.status).toBe('closed');
+    expect(await lossPaid(rider.id)).toBe(0);
+  });
+});
+
+const insertPing = (riderId: string, lat: number, lng: number, at: Date) =>
+  ctx.pool.query('INSERT INTO gps_pings (rider_id, lat, lng, at) VALUES ($1, $2, $3, $4)', [riderId, lat, lng, at]);
+const pickedAt = async (parcelId: string): Promise<Date> =>
+  (await ctx.pool.query(`SELECT at FROM custody_events WHERE parcel_id=$1 AND type='pickup_confirmed'`, [parcelId])).rows[0].at as Date;
+const flagKinds = async (parcelId: string) =>
+  (await ctx.pool.query('SELECT kind FROM flags WHERE parcel_id=$1 ORDER BY id', [parcelId])).rows.map((r) => r.kind as string);
+const WATERFALLS = { lat: -17.9, lng: 31.01 };
+const MBARE = { lat: -17.86, lng: 31.045 };
+const AVONDALE = { lat: -17.803, lng: 31.035 };
+const AVENUES = { lat: -17.834, lng: 31.048 };
+
+describe('location pings', () => {
   const ping = (token: string, body: unknown) =>
     ctx.app.inject({ method: 'POST', url: '/riders/me/location', headers: auth(token), payload: body as object });
 
@@ -160,19 +208,103 @@ describe('location pings and runFlagJob', () => {
     expect((await ctx.app.inject({ method: 'POST', url: '/riders/me/location', headers: auth(shop.token), payload: { lat: 1, lng: 1 } })).statusCode).toBe(403);
   });
 
-  it('raises one stalled flag and none twice for the same stall', async () => {
-    const { p, rider } = await pickedUp();
-    const now = new Date();
-    for (let m = 12; m >= 0; m -= 2) {
-      const at = new Date(now.getTime() - m * 60_000).toISOString();
-      // On the way from the depot to Avenues, then stopped: same spot throughout.
-      expect((await ping(rider.token, { lat: -17.834, lng: 31.048, at })).statusCode).toBe(204);
+  it('allows one ping per 10 seconds per rider; a retry of the same ping is harmless', async () => {
+    const rider = await makeRider(ctx, nextPhone('6'));
+    const at = new Date().toISOString();
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at })).statusCode).toBe(204);
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at })).statusCode).toBe(204);
+    let limited = 0;
+    for (let i = 1; i <= 3; i += 1) {
+      const res = await ping(rider.token, { lat: -17.8, lng: 31, at: new Date(Date.now() + i * 1000).toISOString() });
+      if (res.statusCode === 429) limited += 1;
     }
-    expect(await runFlagJob(now)).toBe(1);
-    expect(await runFlagJob(now)).toBe(0);
-    expect(await runFlagJob(new Date(now.getTime() + 30_000))).toBe(0);
-    const rows = await ctx.pool.query('SELECT kind FROM flags WHERE parcel_id=$1', [p.parcelId]);
-    expect(rows.rows).toEqual([{ kind: 'stalled' }]);
+    expect(limited).toBe(3);
+    const n = (await ctx.pool.query('SELECT count(*)::int n FROM gps_pings WHERE rider_id=$1', [rider.id])).rows[0].n;
+    expect(n).toBe(1);
+  });
+
+  it('rejects pings stamped more than 5 minutes old, over 1 minute ahead, or earlier than the latest stored ping', async () => {
+    const rider = await makeRider(ctx, nextPhone('6'));
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at: ago(2 * 3_600_000) })).statusCode).toBe(400);
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at: ago(6 * 60_000) })).statusCode).toBe(400);
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at: new Date(Date.now() + 2 * 60_000).toISOString() })).statusCode).toBe(400);
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at: ago(60_000) })).statusCode).toBe(204);
+    await ctx.pool.query(`UPDATE gps_pings SET received_at = now() - interval '1 minute' WHERE rider_id=$1`, [rider.id]);
+    expect((await ping(rider.token, { lat: -17.8, lng: 31, at: ago(120_000) })).statusCode).toBe(400);
+  });
+});
+
+describe('runFlagJob', () => {
+  async function inFlight(suburbs: string[], beforePickup?: (riderId: string) => Promise<void>) {
+    const rider = await makeRider(ctx, nextPhone('6'), { topupCents: 500 });
+    const parcels: string[] = [];
+    for (const suburb of suburbs) {
+      const phone = nextPhone('5');
+      const p = await book(ctx, shop.token, { level: 'express', suburb, valueCents: 1500, recipientPhone: phone, recipientPhoneConfirm: phone });
+      expect((await accept(await bundleOf(p.parcelId), rider.token)).statusCode).toBe(200);
+      if (beforePickup && parcels.length === 0) await beforePickup(rider.id);
+      expect((await event(p.parcelId, rider.token, 'pickup_confirmed', 'https://photos.test/pickup.jpg')).statusCode).toBe(201);
+      parcels.push(p.parcelId);
+    }
+    return { rider, parcels };
+  }
+
+  it('raises one stalled flag and none twice for the same stall', async () => {
+    const { rider, parcels } = await inFlight(['Avenues']);
+    const t0 = await pickedAt(parcels[0] as string);
+    for (let m = 1; m <= 13; m += 2) await insertPing(rider.id, AVENUES.lat, AVENUES.lng, new Date(t0.getTime() + m * 60_000));
+    const now = new Date(t0.getTime() + 13 * 60_000 + 20_000);
+    await runFlagJob(now);
+    await runFlagJob(now);
+    await runFlagJob(new Date(now.getTime() + 30_000));
+    expect(await flagKinds(parcels[0] as string)).toEqual(['stalled']);
+  });
+
+  it('a 5-hour continuous stall run every 30 minutes yields exactly one flag', async () => {
+    const { rider, parcels } = await inFlight(['Avenues']);
+    const t0 = await pickedAt(parcels[0] as string);
+    for (let m = 1; m <= 5 * 60 + 10; m += 2) await insertPing(rider.id, AVENUES.lat, AVENUES.lng, new Date(t0.getTime() + m * 60_000));
+    for (let m = 30; m <= 5 * 60; m += 30) await runFlagJob(new Date(t0.getTime() + m * 60_000 + 10_000));
+    expect(await flagKinds(parcels[0] as string)).toEqual(['stalled']);
+  });
+
+  it('a new stall after the rider moved is a new episode', async () => {
+    const { rider, parcels } = await inFlight(['Avenues']);
+    const t0 = await pickedAt(parcels[0] as string);
+    for (let m = 1; m <= 13; m += 2) await insertPing(rider.id, AVENUES.lat, AVENUES.lng, new Date(t0.getTime() + m * 60_000));
+    await runFlagJob(new Date(t0.getTime() + 14 * 60_000));
+    for (let m = 15; m <= 29; m += 2) await insertPing(rider.id, AVENUES.lat + 0.004, AVENUES.lng, new Date(t0.getTime() + m * 60_000));
+    await runFlagJob(new Date(t0.getTime() + 30 * 60_000));
+    expect(await flagKinds(parcels[0] as string)).toEqual(['stalled', 'stalled']);
+  });
+
+  it('pings from before pickup (riding from Waterfalls to the shop) do not flag the parcel off route', async () => {
+    const { rider, parcels } = await inFlight(['Avenues'], async (riderId) => {
+      await insertPing(riderId, WATERFALLS.lat, WATERFALLS.lng, new Date(Date.now() - 25 * 60_000));
+      await insertPing(riderId, WATERFALLS.lat, WATERFALLS.lng, new Date(Date.now() - 15 * 60_000));
+    });
+    const t0 = await pickedAt(parcels[0] as string);
+    await insertPing(rider.id, AVENUES.lat, AVENUES.lng, new Date(t0.getTime() + 60_000));
+    await runFlagJob(new Date(t0.getTime() + 2 * 60_000));
+    expect(await flagKinds(parcels[0] as string)).toEqual([]);
+  });
+
+  it('a rider with Mbare and Avondale parcels in flight is not flagged off route for either', async () => {
+    const { rider, parcels } = await inFlight(['Mbare', 'Avondale']);
+    const t0 = await pickedAt(parcels[1] as string);
+    await insertPing(rider.id, MBARE.lat, MBARE.lng, new Date(t0.getTime() + 60_000));
+    await insertPing(rider.id, AVONDALE.lat, AVONDALE.lng, new Date(t0.getTime() + 5 * 60_000));
+    await runFlagJob(new Date(t0.getTime() + 6 * 60_000));
+    for (const id of parcels) expect(await flagKinds(id)).toEqual([]);
+  });
+
+  it('still flags a rider who really leaves every planned route', async () => {
+    const { rider, parcels } = await inFlight(['Avenues']);
+    const t0 = await pickedAt(parcels[0] as string);
+    await insertPing(rider.id, WATERFALLS.lat, WATERFALLS.lng, new Date(t0.getTime() + 60_000));
+    await runFlagJob(new Date(t0.getTime() + 2 * 60_000));
+    expect(await flagKinds(parcels[0] as string)).toEqual(['off_route']);
   });
 
   it('admin-only POST /admin/run-flag-job returns the new count', async () => {
