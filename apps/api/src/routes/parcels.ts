@@ -5,18 +5,20 @@ import {
   IllegalTransitionError,
   issueCode,
   priceCents,
+  refundFee,
   riderTier,
   depositCents,
   type CustodyEvent,
   type EventType,
 } from '@tuma/core';
 import type { FastifyPluginAsync } from 'fastify';
+import type pg from 'pg';
 import { z } from 'zod';
 import type { Deps } from '../app';
 import { requireRole, userOf, type Role } from '../auth';
 import { withTx } from '../db';
 import { HttpError } from '../errors';
-import { insertEvent, loadEntries, loadEvents } from '../repo';
+import { insertEntries, insertEvent, loadEntries, loadEvents, lockRider } from '../repo';
 import { centsSchema, httpsUrl, parse, phoneSchema, uuidParam } from '../validate';
 
 const TRACK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -84,6 +86,59 @@ function statusOf(last: EventType): string {
   if (last === 'cancelled') return 'cancelled';
   if (last === 'reported_lost' || last === 'refused_by_rider') return 'problem';
   return 'in_progress';
+}
+
+const MAX_LOCK_RETRIES = 3;
+/** States in which the parcel is not yet in the rider's hands, so shop or admin may still end it. */
+const BEFORE_PICKUP: readonly EventType[] = ['booked', 'sealed', 'refused_by_rider'];
+
+/**
+ * Records one custody event. Lock order: rider (only when a refund may be needed), then the parcel row.
+ * Returns false when the assigned rider changed under us and the caller should retry.
+ */
+async function recordEvent(
+  tx: pg.PoolClient,
+  id: string,
+  body: { type: EventType; photoUrl?: string | undefined },
+  user: { id: string; role: Role },
+): Promise<boolean> {
+  const peek = (await tx.query('SELECT shop_id, rider_id FROM parcels WHERE id = $1', [id])).rows[0];
+  if (!peek || (user.role === 'shop' && peek.shop_id !== user.id)) throw new HttpError(404, 'not_found', 'Parcel not found');
+
+  const refunding = body.type === 'cancelled' && user.role !== 'rider' && peek.rider_id !== null;
+  const locked = refunding ? await lockRider(tx, peek.rider_id) : undefined;
+
+  const p = (await tx.query('SELECT rider_id FROM parcels WHERE id = $1 FOR UPDATE', [id])).rows[0];
+  if (p.rider_id !== peek.rider_id) return false;
+  if (user.role === 'rider' && p.rider_id !== user.id) throw new HttpError(403, 'forbidden', 'You have not accepted this parcel');
+
+  const events = await loadEvents(tx, id);
+  const last = events[events.length - 1]?.type;
+  const ends = body.type === 'cancelled' || body.type === 'reported_lost';
+  if (ends && user.role !== 'rider' && last && !BEFORE_PICKUP.includes(last)) {
+    throw new HttpError(409, 'illegal_transition', 'Only the assigned rider can end a parcel after pickup');
+  }
+  const at = new Date().toISOString();
+  const next: CustodyEvent = {
+    type: body.type,
+    at,
+    actor: ACTOR_OF[user.role],
+    ...(body.photoUrl ? { photoUrl: body.photoUrl } : {}),
+  };
+  try {
+    appendEvent(events, next);
+  } catch (err) {
+    if (err instanceof IllegalTransitionError) throw new HttpError(409, 'illegal_transition', err.message);
+    throw err;
+  }
+  await insertEvent(tx, id, next);
+
+  if (locked) {
+    // Refunds the fee only if one was charged for this parcel, and only once (core refundFee is idempotent).
+    const after = refundFee(locked.entries, id, at);
+    await insertEntries(tx, peek.rider_id, after.slice(locked.entries.length));
+  }
+  return true;
 }
 
 export const parcelRoutes =
@@ -202,32 +257,15 @@ export const parcelRoutes =
         if (body.type === 'sealed' && !body.photoUrl) {
           throw new HttpError(400, 'validation', 'photoUrl: a sealed event needs a photo of the sealed parcel');
         }
-        await withTx(deps.pool, async (tx) => {
-          const found = await tx.query('SELECT shop_id, rider_id FROM parcels WHERE id = $1 FOR UPDATE', [id]);
-          const p = found.rows[0];
-          if (!p || (user.role === 'shop' && p.shop_id !== user.id)) throw new HttpError(404, 'not_found', 'Parcel not found');
-          if (user.role === 'rider' && p.rider_id !== user.id) {
-            throw new HttpError(403, 'forbidden', 'You have not accepted this parcel');
-          }
-          const events = await loadEvents(tx, id);
-          const next: CustodyEvent = {
-            type: body.type,
-            at: new Date().toISOString(),
-            actor: ACTOR_OF[user.role],
-            ...(body.photoUrl ? { photoUrl: body.photoUrl } : {}),
-          };
-          try {
-            appendEvent(events, next);
-          } catch (err) {
-            if (err instanceof IllegalTransitionError) throw new HttpError(409, 'illegal_transition', err.message);
-            throw err;
-          }
-          await insertEvent(tx, id, next);
-        });
-        return reply.status(201).send({ ok: true });
+        // The rider can change between our unlocked peek and the parcel lock (an accept landing in between);
+        // if so, start over so the rider row is always locked before the parcel row.
+        for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt += 1) {
+          const done = await withTx(deps.pool, (tx) => recordEvent(tx, id, body, user));
+          if (done) return reply.status(201).send({ ok: true });
+        }
+        throw new HttpError(409, 'busy', 'The parcel changed while recording this event, try again');
       },
     );
-
     // Public, read-only. The token is the only credential, so it exposes the bare minimum.
     app.get('/track/:token', async (req) => {
       const { token } = req.params as { token: string };

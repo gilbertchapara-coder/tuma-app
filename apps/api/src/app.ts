@@ -21,6 +21,8 @@ export interface AppOptions {
   adminPhones?: string[];
   /** Minimum gap between OTP requests for one phone. */
   otpCooldownMs?: number;
+  /** Requests per minute per IP on /auth/*. Default 10. */
+  authRateLimitPerMinute?: number;
   logger?: boolean | object;
 }
 
@@ -32,9 +34,11 @@ export interface Deps {
   publicBaseUrl: string;
   adminPhones: string[];
   otpCooldownMs: number;
+  authRateLimitPerMinute: number;
 }
 
 const DEFAULT_OTP_COOLDOWN_MS = 30_000;
+const DEFAULT_AUTH_RATE_LIMIT = 10;
 const BODY_LIMIT_BYTES = 64 * 1024;
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -46,6 +50,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     publicBaseUrl: opts.publicBaseUrl.replace(/\/+$/, ''),
     adminPhones: opts.adminPhones ?? [],
     otpCooldownMs: opts.otpCooldownMs ?? DEFAULT_OTP_COOLDOWN_MS,
+    authRateLimitPerMinute: opts.authRateLimitPerMinute ?? DEFAULT_AUTH_RATE_LIMIT,
   };
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: BODY_LIMIT_BYTES });
@@ -58,6 +63,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       return reply.status(400).send({ error: 'validation', message: 'Invalid request' });
     }
     const status = (err as { statusCode?: number }).statusCode;
+    if (status === 429) {
+      return reply.status(429).send({ error: 'too_many_requests', message: 'Too many requests, slow down' });
+    }
     if (typeof status === 'number' && status >= 400 && status < 500) {
       return reply.status(status).send({ error: 'bad_request', message: 'The request could not be read' });
     }

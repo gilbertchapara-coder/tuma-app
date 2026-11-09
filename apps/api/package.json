@@ -17,6 +17,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.2.2",
     "@tuma/core": "*",
     "fastify": "^5.12.8",
     "pg": "^8.23.1",

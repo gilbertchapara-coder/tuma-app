@@ -35,7 +35,7 @@ export interface TestCtx {
 export const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
 /** A fresh database per call, on the shared embedded Postgres. */
-export async function createCtx(): Promise<TestCtx> {
+export async function createCtx(opts: { authRateLimitPerMinute?: number } = {}): Promise<TestCtx> {
   const adminUrl = inject('pgAdminUrl');
   const dbName = `t_${randomBytes(6).toString('hex')}`;
   const admin = new pg.Client({ connectionString: adminUrl });
@@ -54,6 +54,7 @@ export async function createCtx(): Promise<TestCtx> {
     publicBaseUrl: 'https://tuma.test',
     adminPhones: [ADMIN_PHONE],
     otpCooldownMs: 0,
+    authRateLimitPerMinute: opts.authRateLimitPerMinute ?? 100_000,
   });
   await app.ready();
 

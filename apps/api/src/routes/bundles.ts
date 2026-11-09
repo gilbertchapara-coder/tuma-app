@@ -62,8 +62,8 @@ export const bundleRoutes =
     app.get('/bundles/open', { preHandler: requireRole(deps.jwtSecret, 'rider') }, async () => {
       const { rows } = await deps.pool.query(
         `SELECT b.id, b.run, b.level, b.drop_order, count(bp.parcel_id)::int AS parcel_count
-         FROM bundles b JOIN bundle_parcels bp ON bp.bundle_id = b.id
-         WHERE b.status = 'open' GROUP BY b.id ORDER BY b.created_at`,
+         FROM bundles b JOIN bundle_parcels bp ON bp.bundle_id = b.id JOIN parcels p ON p.id = bp.parcel_id
+         WHERE b.status = 'open' AND ${LAST_EVENT_SEALED} GROUP BY b.id ORDER BY b.created_at`,
       );
       return {
         bundles: rows.map((r) => ({
@@ -86,9 +86,15 @@ export const bundleRoutes =
         if (b.rows[0].status !== 'open') throw new HttpError(409, 'taken', 'Another rider already took this bundle');
 
         const { stats, entries } = await lockRider(tx, riderId);
+        // Then the bundle's parcel rows, ordered by id, so a concurrent cancel/lost either lands first
+        // (parcel no longer sealed, skipped below) or waits until this accept commits.
+        await tx.query(
+          'SELECT id FROM parcels WHERE id IN (SELECT parcel_id FROM bundle_parcels WHERE bundle_id = $1) ORDER BY id FOR UPDATE',
+          [id],
+        );
         const parcels = await tx.query(
           `SELECT p.id, p.value_cents FROM bundle_parcels bp JOIN parcels p ON p.id = bp.parcel_id
-           WHERE bp.bundle_id = $1 AND ${LAST_EVENT_SEALED} ORDER BY p.created_at`,
+           WHERE bp.bundle_id = $1 AND ${LAST_EVENT_SEALED} ORDER BY p.id`,
           [id],
         );
         if (parcels.rows.length === 0) throw new HttpError(409, 'unavailable', 'This bundle has no parcels left to carry');

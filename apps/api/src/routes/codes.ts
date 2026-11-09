@@ -22,7 +22,8 @@ export const codeRoutes =
       const riderId = userOf(req).id;
 
       const outcome = await withTx(deps.pool, async (tx): Promise<Outcome> => {
-        const parcel = await tx.query('SELECT rider_id FROM parcels WHERE id = $1', [id]);
+        // Lock order: parcels, then delivery_codes. Custody changes (reported_lost, cancel) also hold the parcel lock.
+        const parcel = await tx.query('SELECT rider_id FROM parcels WHERE id = $1 FOR UPDATE', [id]);
         if (!parcel.rows[0]) throw new HttpError(404, 'not_found', 'Parcel not found');
         if (parcel.rows[0].rider_id !== riderId) throw new HttpError(403, 'forbidden', 'You have not accepted this parcel');
 

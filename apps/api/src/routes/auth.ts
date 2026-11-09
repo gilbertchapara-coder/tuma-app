@@ -1,4 +1,5 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import rateLimit from '@fastify/rate-limit';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { Deps } from '../app';
@@ -9,6 +10,9 @@ import { parse, phoneSchema } from '../validate';
 
 const OTP_TTL_MS = 5 * 60_000;
 const OTP_MAX_ATTEMPTS = 5;
+const LOCK_AFTER_FAILURES = 10;
+const FAILURE_WINDOW_HOURS = 24;
+const LOCK_HOURS = 24;
 
 const requestBody = z.object({ phone: phoneSchema }).strict();
 const verifyBody = z
@@ -27,6 +31,9 @@ const invalidOtp = (): HttpError => new HttpError(401, 'invalid_otp', 'That code
 export const authRoutes =
   (deps: Deps): FastifyPluginAsync =>
   async (app) => {
+    // Per-IP limit on every /auth route (this plugin is encapsulated, so it covers only these routes).
+    await app.register(rateLimit, { max: deps.authRateLimitPerMinute, timeWindow: '1 minute' });
+
     app.post('/auth/otp/request', async (req) => {
       const { phone } = parse(requestBody, req.body);
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
@@ -52,18 +59,49 @@ export const authRoutes =
     app.post('/auth/otp/verify', async (req) => {
       const body = parse(verifyBody, req.body);
       const outcome = await withTx(deps.pool, async (tx) => {
+        // Failure counter per phone, kept across new code requests. Locked phones fail like a wrong code.
+        await tx.query('INSERT INTO otp_failures (phone) VALUES ($1) ON CONFLICT DO NOTHING', [body.phone]);
+        const f = (
+          await tx.query(
+            `SELECT failures, window_start < now() - $2 * interval '1 hour' AS window_over,
+                    locked_until IS NOT NULL AND locked_until > now() AS locked,
+                    locked_until IS NOT NULL AND locked_until <= now() AS lock_over
+             FROM otp_failures WHERE phone = $1 FOR UPDATE`,
+            [body.phone, FAILURE_WINDOW_HOURS],
+          )
+        ).rows[0];
+        if (f.locked) return { ok: false as const };
+        if (f.window_over || f.lock_over) {
+          await tx.query('UPDATE otp_failures SET failures = 0, window_start = now(), locked_until = NULL WHERE phone = $1', [body.phone]);
+        }
+        const recordFailure = async (): Promise<void> => {
+          await tx.query(
+            `UPDATE otp_failures SET failures = failures + 1,
+               locked_until = CASE WHEN failures + 1 >= $2 THEN now() + $3 * interval '1 hour' ELSE locked_until END
+             WHERE phone = $1`,
+            [body.phone, LOCK_AFTER_FAILURES, LOCK_HOURS],
+          );
+        };
+
         const { rows } = await tx.query(
           'SELECT code_hash, attempts, expires_at > now() AS live FROM otp_challenges WHERE phone = $1 FOR UPDATE',
           [body.phone],
         );
         const ch = rows[0];
-        if (!ch || !ch.live || ch.attempts >= OTP_MAX_ATTEMPTS) return { ok: false as const };
+        if (!ch) return { ok: false as const };
+        if (!ch.live) return { ok: false as const };
+        if (ch.attempts >= OTP_MAX_ATTEMPTS) {
+          await recordFailure();
+          return { ok: false as const };
+        }
         const expected = Buffer.from(ch.code_hash as string, 'hex');
         const actual = hashOtp(deps.jwtSecret, body.phone, body.code);
         if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
           await tx.query('UPDATE otp_challenges SET attempts = attempts + 1 WHERE phone = $1', [body.phone]);
+          await recordFailure();
           return { ok: false as const };
         }
+        await tx.query('DELETE FROM otp_failures WHERE phone = $1', [body.phone]);
         await tx.query('DELETE FROM otp_challenges WHERE phone = $1', [body.phone]);
 
         const existing = await tx.query('SELECT id, role FROM users WHERE phone = $1', [body.phone]);
