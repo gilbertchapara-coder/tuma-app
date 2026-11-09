@@ -29,12 +29,17 @@ const DEFAULT_FEE_CENTS = 25;
 
 const normalise = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase();
 
-export function findSuburb(name: string): Suburb {
+/** Case-insensitive lookup returning the canonical suburb name and its entry. */
+export function findSuburbEntry(name: string): { name: string; suburb: Suburb } {
   const key = normalise(name);
-  for (const [suburb, info] of Object.entries(SUBURBS)) {
-    if (normalise(suburb) === key) return info;
+  for (const [canonical, info] of Object.entries(SUBURBS)) {
+    if (normalise(canonical) === key) return { name: canonical, suburb: info };
   }
   throw new UnknownSuburbError(name);
+}
+
+export function findSuburb(name: string): Suburb {
+  return findSuburbEntry(name).suburb;
 }
 
 export function priceCents(suburb: string, level: ServiceLevel): number {
