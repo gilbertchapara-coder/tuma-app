@@ -1,13 +1,13 @@
 import { platformFeeCents } from './pricing';
 
-export type EntryType = 'topup' | 'fee' | 'fee_refund' | 'deposit_hold' | 'loss_payout';
+export type EntryType = 'topup' | 'fee' | 'fee_refund' | 'deposit_hold' | 'loss_payout' | 'loss_settled';
 
 /** Which pot a loss_payout drew from. Absent means the float. */
 export type Pot = 'deposit' | 'float';
 
 export interface Entry {
   type: EntryType;
-  /** Positive integer magnitude in cents; `type` decides the direction. */
+  /** Positive integer magnitude in cents (0 only on loss_settled); `type` decides the direction. */
   cents: number;
   at: string;
   jobId?: string;
@@ -59,6 +59,8 @@ function pots(entries: readonly Entry[]): Pots {
         if (e.pot === 'deposit') deposit = Math.max(0, deposit - e.cents);
         else float = Math.max(0, float - e.cents);
         break;
+      case 'loss_settled':
+        break;
     }
   }
   return { float, deposit };
@@ -93,9 +95,10 @@ export function holdDeposit(entries: readonly Entry[], cents: number, at: string
 export function chargeFee(entries: readonly Entry[], jobId: string, at: string): Entry[] {
   if (find(entries, 'fee', jobId)) return entries as Entry[];
   const fee = platformFeeCents();
+  if (fee === 0) return entries as Entry[];
+  assertCents(fee);
   const available = balanceCents(entries);
   if (available < fee) throw new InsufficientFloatError(fee, available);
-  if (fee === 0) return entries as Entry[];
   return [...entries, { type: 'fee', cents: fee, at, jobId }];
 }
 
@@ -112,7 +115,7 @@ export interface PayoutResult {
   shortfallCents: number;
 }
 
-/** Pays a loss from the deposit first, then the float, up to what the pots hold. Once per job. */
+/** Pays a loss from the deposit first, then the float, up to what the pots hold. Final on the first call: a loss_settled record blocks any later payout for the job. */
 export function payoutLoss(
   entries: readonly Entry[],
   jobId: string,
@@ -120,11 +123,12 @@ export function payoutLoss(
   at: string,
 ): PayoutResult {
   assertCents(lossCents);
-  const prior = entries.filter((e) => e.type === 'loss_payout' && e.jobId === jobId);
-  if (prior.length > 0) {
+  if (find(entries, 'loss_settled', jobId)) {
     const paid = Math.min(
       lossCents,
-      prior.reduce((sum, e) => sum + e.cents, 0),
+      entries
+        .filter((e) => e.type === 'loss_payout' && e.jobId === jobId)
+        .reduce((sum, e) => sum + e.cents, 0),
     );
     return { entries: entries as Entry[], paidCents: paid, shortfallCents: lossCents - paid };
   }
@@ -135,8 +139,9 @@ export function payoutLoss(
   if (fromDeposit > 0) appended.push({ type: 'loss_payout', cents: fromDeposit, at, jobId, pot: 'deposit' });
   if (fromFloat > 0) appended.push({ type: 'loss_payout', cents: fromFloat, at, jobId, pot: 'float' });
   const paidCents = fromDeposit + fromFloat;
+  appended.push({ type: 'loss_settled', cents: 0, at, jobId });
   return {
-    entries: appended.length > 0 ? [...entries, ...appended] : (entries as Entry[]),
+    entries: [...entries, ...appended],
     paidCents,
     shortfallCents: lossCents - paidCents,
   };

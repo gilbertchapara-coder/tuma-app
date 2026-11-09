@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { platformFeeCents } from '../src/pricing';
 import {
   InsufficientFloatError,
   InvalidAmountError,
@@ -11,6 +12,11 @@ import {
   topup,
   type Entry,
 } from '../src/ledger';
+
+vi.mock('../src/pricing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/pricing')>();
+  return { ...actual, platformFeeCents: vi.fn(actual.platformFeeCents) };
+});
 
 const T = '2026-11-09T08:00:00Z';
 const funded = (cents: number): Entry[] => topup([], cents, T);
@@ -66,6 +72,33 @@ describe('chargeFee', () => {
     const out = chargeFee(e, 'job1', T);
     expect(e).toHaveLength(1);
     expect(out).not.toBe(e);
+  });
+});
+
+describe('chargeFee fee validation', () => {
+  it.each([NaN, -5, 1.5, Infinity])('throws on fee %s and leaves entries unchanged', (bad) => {
+    const e = funded(500);
+    const snapshot = JSON.stringify(e);
+    vi.mocked(platformFeeCents).mockReturnValueOnce(bad);
+    expect(() => chargeFee(e, 'job1', T)).toThrow(InvalidAmountError);
+    expect(JSON.stringify(e)).toBe(snapshot);
+  });
+  it('a zero fee records nothing and does not throw', () => {
+    const e = funded(500);
+    vi.mocked(platformFeeCents).mockReturnValueOnce(0);
+    expect(chargeFee(e, 'job1', T)).toBe(e);
+  });
+  it('env values abc, -5 and 1.5 fall back to the default fee of 25', () => {
+    const saved = process.env.PLATFORM_FEE_CENTS;
+    try {
+      for (const raw of ['abc', '-5', '1.5']) {
+        process.env.PLATFORM_FEE_CENTS = raw;
+        expect(balanceCents(chargeFee(funded(500), 'job1', T))).toBe(475);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PLATFORM_FEE_CENTS;
+      else process.env.PLATFORM_FEE_CENTS = saved;
+    }
   });
 });
 
@@ -142,11 +175,36 @@ describe('payoutLoss', () => {
     expect(depositCents(r.entries)).toBe(0);
     expect(balanceCents(r.entries)).toBe(0);
   });
-  it('pays nothing and appends nothing when both pots are empty', () => {
+  it('pays nothing but records a settlement when both pots are empty', () => {
     const r = payoutLoss([], 'job1', 100, T);
     expect(r.paidCents).toBe(0);
     expect(r.shortfallCents).toBe(100);
-    expect(r.entries).toEqual([]);
+    expect(r.entries).toEqual([{ type: 'loss_settled', cents: 0, at: T, jobId: 'job1' }]);
+  });
+  it('a zero payout is final: a later top-up is not taken on retry', () => {
+    const first = payoutLoss([], 'job1', 100, T);
+    const topped = topup(first.entries, 500, T);
+    const again = payoutLoss(topped, 'job1', 100, T);
+    expect(again.paidCents).toBe(0);
+    expect(again.shortfallCents).toBe(100);
+    expect(balanceCents(again.entries)).toBe(500);
+    expect(again.entries).toBe(topped);
+  });
+  it('a partly paid loss repeated later never pays more', () => {
+    const first = payoutLoss(holdDeposit(funded(100), 100, T), 'job1', 300, T);
+    expect(first.paidCents).toBe(100);
+    const topped = topup(first.entries, 500, T);
+    const again = payoutLoss(topped, 'job1', 300, T);
+    expect(again.paidCents).toBe(100);
+    expect(again.shortfallCents).toBe(200);
+    expect(balanceCents(again.entries)).toBe(500);
+    expect(again.entries).toBe(topped);
+  });
+  it('loss_settled does not change either pot', () => {
+    const e = holdDeposit(funded(500), 200, T);
+    const settled: Entry[] = [...e, { type: 'loss_settled', cents: 0, at: T, jobId: 'x' }];
+    expect(balanceCents(settled)).toBe(300);
+    expect(depositCents(settled)).toBe(200);
   });
   it('is idempotent per jobId', () => {
     const e = holdDeposit(funded(500), 200, T);
