@@ -34,12 +34,12 @@ describe('bundleRuns', () => {
 
   it('excludes parcels booked after the cutoff', () => {
     const out = bundleRuns([p('a', 'Mbare'), p('b', 'Mbare', 'standard', after)], CUTOFF);
-    expect(out[0].parcelIds).toEqual(['a']);
+    expect(out[0]?.parcelIds).toEqual(['a']);
   });
 
   it('includes a parcel booked exactly at the cutoff', () => {
     const out = bundleRuns([p('a', 'Mbare', 'standard', CUTOFF)], CUTOFF);
-    expect(out[0].parcelIds).toEqual(['a']);
+    expect(out[0]?.parcelIds).toEqual(['a']);
   });
 
   it('keeps standard and overnight in separate bundles', () => {
@@ -57,7 +57,7 @@ describe('bundleRuns', () => {
 
   it('breaks same-band ties alphabetically and dedupes case-insensitively', () => {
     const out = bundleRuns([p('a', 'milton park'), p('b', 'Avenues'), p('c', 'Avenues')], CUTOFF);
-    expect(out[0].dropOrder).toEqual(['Avenues', 'Milton Park']);
+    expect(out[0]?.dropOrder).toEqual(['Avenues', 'Milton Park']);
   });
 
   it('throws UnknownSuburbError for an unknown suburb', () => {
