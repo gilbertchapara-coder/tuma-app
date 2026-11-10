@@ -272,7 +272,7 @@ export const parcelRoutes =
       const { token } = req.params as { token: string };
       if (!TRACK_TOKEN.test(token)) throw new HttpError(404, 'not_found', 'Tracking link not found');
       const { rows } = await deps.pool.query(
-        `SELECT p.id, p.suburb, p.rider_id, u.first_name FROM parcels p LEFT JOIN users u ON u.id = p.rider_id WHERE p.track_token = $1`,
+        `SELECT p.id, p.suburb, p.recipient_phone, p.rider_id, u.first_name FROM parcels p LEFT JOIN users u ON u.id = p.rider_id WHERE p.track_token = $1`,
         [token],
       );
       const p = rows[0];
@@ -300,6 +300,8 @@ export const parcelRoutes =
         status: statusOf(last),
         stage: STAGE[last],
         suburb: p.suburb,
+        run: findSuburbEntry(p.suburb).suburb.run,
+        phoneLast3: String(p.recipient_phone).slice(-3),
         rider,
         events: events.map((e) => ({ stage: STAGE[e.type], at: e.at })),
       };

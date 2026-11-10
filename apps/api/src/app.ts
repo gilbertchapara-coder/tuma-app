@@ -9,6 +9,7 @@ import { bindFlagJobPool } from './jobs/flagJob';
 import { bundleRoutes } from './routes/bundles';
 import { claimRoutes } from './routes/claims';
 import { locationRoutes } from './routes/location';
+import { metricsRoutes } from './routes/metrics';
 import { codeRoutes } from './routes/codes';
 import { parcelRoutes } from './routes/parcels';
 import { riderRoutes } from './routes/riders';
@@ -87,6 +88,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(codeRoutes(deps));
   await app.register(claimRoutes(deps));
   await app.register(locationRoutes(deps));
+  await app.register(metricsRoutes(deps));
   bindFlagJobPool(deps.pool);
   return app;
 }
