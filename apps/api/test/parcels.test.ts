@@ -198,7 +198,7 @@ describe('GET /track/:token', () => {
     const body = res.json();
     expect(body).toMatchObject({ status: 'in_progress', stage: 'sealed', suburb: 'Avondale', rider: null });
     expect(Object.keys(body).sort()).toEqual(['events', 'phoneLast3', 'rider', 'run', 'stage', 'status', 'suburb']);
-    expect(body.phoneLast3).toBe('***123');
+    expect(body.phoneLast3).toBe('123');
     const text = res.body;
     const code = ctx.notifier.codes.get('+263774555123') as string;
     for (const leak of ['+263774555123', '555123', '774555', code, '2999', 'SECRET-CONTENTS', p.parcelId, shop.id]) {
