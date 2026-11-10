@@ -81,3 +81,16 @@ export function toPayload(form: BookingForm): BookingPayload | null {
     sealedPhotoUrl: form.sealedPhotoUrl,
   };
 }
+
+/** True when the parcel and recipient details (step 3) are complete and valid. */
+export function detailsValid(form: BookingForm): boolean {
+  const phone = normalisePhone(form.recipientPhone);
+  return (
+    form.contents.trim() !== '' &&
+    parseDollarsToCents(form.valueText) !== null &&
+    PHONE.test(phone) &&
+    phone === normalisePhone(form.recipientPhoneConfirm)
+  );
+}
+
+export const levelLabel = (id: ServiceLevel | null): string => LEVELS.find((l) => l.id === id)?.label ?? '';
