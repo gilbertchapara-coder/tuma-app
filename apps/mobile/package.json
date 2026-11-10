@@ -8,9 +8,12 @@
   },
   "jest": {
     "preset": "jest-expo",
-    "testMatch": ["<rootDir>/test/**/*.test.ts?(x)"]
+    "testMatch": [
+      "<rootDir>/test/**/*.test.ts?(x)"
+    ]
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "^1.23.1",
     "@tuma/core": "*",
     "expo": "~52.0.0",
     "react": "18.3.1",
