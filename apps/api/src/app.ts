@@ -13,6 +13,8 @@ import { metricsRoutes } from './routes/metrics';
 import { codeRoutes } from './routes/codes';
 import { parcelRoutes } from './routes/parcels';
 import { riderRoutes } from './routes/riders';
+import { topupRoutes } from './routes/topup';
+import { DEFAULT_TOPUP_MAX_BALANCE_CENTS, DEFAULT_TOPUP_MAX_SINGLE_CENTS, noWalletProvider, type TopupProvider } from './topup/provider';
 
 export interface AppOptions {
   pool: pg.Pool;
@@ -28,6 +30,12 @@ export interface AppOptions {
   /** Requests per minute per IP on /auth/*. Default 10. */
   authRateLimitPerMinute?: number;
   logger?: boolean | object;
+  /** Wallet adapter for rider float top-ups. */
+  topupProvider?: TopupProvider;
+  /** Largest single top-up in cents. Default $20 (pilot placeholder). */
+  topupMaxSingleCents?: number;
+  /** Largest rider float in cents. Default $50 (pilot placeholder). */
+  topupMaxBalanceCents?: number;
 }
 
 export interface Deps {
@@ -39,6 +47,9 @@ export interface Deps {
   adminPhones: string[];
   otpCooldownMs: number;
   authRateLimitPerMinute: number;
+  topupProvider: TopupProvider;
+  topupMaxSingleCents: number;
+  topupMaxBalanceCents: number;
 }
 
 const DEFAULT_OTP_COOLDOWN_MS = 30_000;
@@ -55,6 +66,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     adminPhones: opts.adminPhones ?? [],
     otpCooldownMs: opts.otpCooldownMs ?? DEFAULT_OTP_COOLDOWN_MS,
     authRateLimitPerMinute: opts.authRateLimitPerMinute ?? DEFAULT_AUTH_RATE_LIMIT,
+    topupProvider: opts.topupProvider ?? noWalletProvider,
+    topupMaxSingleCents: opts.topupMaxSingleCents ?? DEFAULT_TOPUP_MAX_SINGLE_CENTS,
+    topupMaxBalanceCents: opts.topupMaxBalanceCents ?? DEFAULT_TOPUP_MAX_BALANCE_CENTS,
   };
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: BODY_LIMIT_BYTES });
@@ -83,6 +97,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   await app.register(authRoutes(deps));
   await app.register(riderRoutes(deps));
+  await app.register(topupRoutes(deps));
   await app.register(parcelRoutes(deps));
   await app.register(bundleRoutes(deps));
   await app.register(codeRoutes(deps));

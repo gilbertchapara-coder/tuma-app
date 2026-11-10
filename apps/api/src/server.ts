@@ -22,6 +22,7 @@ const consoleSms: OtpProvider & CodeNotifier = {
   },
 };
 
+
 async function main(): Promise<void> {
   const jwtSecret = required('JWT_SECRET');
   const databaseUrl = required('DATABASE_URL');

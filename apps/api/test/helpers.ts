@@ -5,6 +5,8 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app';
 import { migrate } from '../src/db';
 import type { OtpProvider, CodeNotifier } from '../src/ports';
+import type { TopupProvider } from '../src/topup/provider';
+import { FakeTopupProvider } from '../src/topup/fakeProvider';
 
 export const ADMIN_PHONE = '+263770000001';
 
@@ -35,7 +37,14 @@ export interface TestCtx {
 export const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
 /** A fresh database per call, on the shared embedded Postgres. */
-export async function createCtx(opts: { authRateLimitPerMinute?: number } = {}): Promise<TestCtx> {
+export async function createCtx(
+  opts: {
+    authRateLimitPerMinute?: number;
+    topupProvider?: TopupProvider;
+    topupMaxSingleCents?: number;
+    topupMaxBalanceCents?: number;
+  } = {},
+): Promise<TestCtx> {
   const adminUrl = inject('pgAdminUrl');
   const dbName = `t_${randomBytes(6).toString('hex')}`;
   const admin = new pg.Client({ connectionString: adminUrl });
@@ -55,6 +64,9 @@ export async function createCtx(opts: { authRateLimitPerMinute?: number } = {}):
     adminPhones: [ADMIN_PHONE],
     otpCooldownMs: 0,
     authRateLimitPerMinute: opts.authRateLimitPerMinute ?? 100_000,
+    topupProvider: opts.topupProvider ?? new FakeTopupProvider(),
+    topupMaxSingleCents: opts.topupMaxSingleCents,
+    topupMaxBalanceCents: opts.topupMaxBalanceCents,
   });
   await app.ready();
 
@@ -115,13 +127,15 @@ export async function makeRider(ctx: TestCtx, phone: string, setup: RiderSetup =
   if (profile.statusCode !== 200) throw new Error(`profile ${profile.statusCode} ${profile.body}`);
   const deposit = setup.depositCents ?? 2000;
   const topupTotal = (setup.topupCents ?? 0) + deposit;
-  const top = await ctx.app.inject({
-    method: 'POST',
-    url: `/riders/${rider.id}/topup`,
-    headers: auth(admin),
-    payload: { cents: topupTotal },
-  });
-  if (top.statusCode !== 200) throw new Error(`topup ${top.statusCode} ${top.body}`);
+  if (topupTotal > 0) {
+    const top = await ctx.app.inject({
+      method: 'POST',
+      url: `/riders/${rider.id}/topup`,
+      headers: auth(admin),
+      payload: { cents: topupTotal },
+    });
+    if (top.statusCode !== 200) throw new Error(`topup ${top.statusCode} ${top.body}`);
+  }
   if (deposit > 0) {
     const dep = await ctx.app.inject({
       method: 'POST',
