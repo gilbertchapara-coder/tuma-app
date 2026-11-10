@@ -1,8 +1,14 @@
 {
   "name": "tuma",
   "private": true,
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "test": "npm test --workspaces --if-present"
+  },
+  "overrides": {
+    "react-server-dom-webpack": "19.0.2"
   }
 }
