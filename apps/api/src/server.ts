@@ -2,6 +2,7 @@ import pg from 'pg';
 import { buildApp } from './app';
 import { migrate } from './db';
 import type { CodeNotifier, OtpProvider } from './ports';
+import { createSmokeTestSms } from './smokeTestSms';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -28,10 +29,16 @@ async function main(): Promise<void> {
   const databaseUrl = required('DATABASE_URL');
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
   await migrate(pool);
+  // TEST ONLY: both variables must be set. Only the listed phones get codes, readable with the key.
+  const smokeKey = process.env.SMOKE_TEST_KEY;
+  const smokePhones = (process.env.SMOKE_TEST_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const smoke = smokeKey && smokePhones.length > 0 ? createSmokeTestSms(smokePhones) : undefined;
+  if (smoke) console.warn(`SMOKE TEST MODE ON for ${smokePhones.length} phone(s). Remove SMOKE_TEST_KEY to turn it off.`);
   const app = await buildApp({
     pool,
-    otp: consoleSms,
-    notifier: consoleSms,
+    otp: smoke ? smoke.otp : consoleSms,
+    notifier: smoke ? smoke.notifier : consoleSms,
+    smokeTest: smoke && smokeKey ? { key: smokeKey, sms: smoke } : undefined,
     jwtSecret,
     publicBaseUrl: required('PUBLIC_BASE_URL'),
     adminPhones: (process.env.ADMIN_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),

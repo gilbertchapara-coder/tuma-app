@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
-import type { GlobalSetupContext } from 'vitest/node';
+import type { TestProject } from 'vitest/node';
 
 const require = createRequire(import.meta.url);
 const EmbeddedPostgres = (require('embedded-postgres').default ?? require('embedded-postgres')) as typeof import('embedded-postgres').default;
@@ -26,7 +26,7 @@ declare module 'vitest' {
 }
 
 /** Starts one real PostgreSQL (embedded binary, no system install) for the whole run. */
-export default async function setup({ provide }: GlobalSetupContext) {
+export default async function setup({ provide }: TestProject) {
   const PORT = await freePort();
   const dir = mkdtempSync(join(tmpdir(), 'tuma-pg-'));
   const pg = new EmbeddedPostgres({

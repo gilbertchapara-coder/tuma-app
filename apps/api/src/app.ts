@@ -14,6 +14,7 @@ import { codeRoutes } from './routes/codes';
 import { parcelRoutes } from './routes/parcels';
 import { riderRoutes } from './routes/riders';
 import { topupRoutes } from './routes/topup';
+import { smokeTestRoutes, type SmokeTestOptions } from './smokeTestSms';
 import { DEFAULT_TOPUP_MAX_BALANCE_CENTS, DEFAULT_TOPUP_MAX_SINGLE_CENTS, noWalletProvider, type TopupProvider } from './topup/provider';
 
 export interface AppOptions {
@@ -36,6 +37,8 @@ export interface AppOptions {
   topupMaxSingleCents?: number;
   /** Largest rider float in cents. Default $50 (pilot placeholder). */
   topupMaxBalanceCents?: number;
+  /** TEST ONLY. Registers GET /smoke-test/code/:phone; leave unset in production use. */
+  smokeTest?: SmokeTestOptions;
 }
 
 export interface Deps {
@@ -104,6 +107,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(claimRoutes(deps));
   await app.register(locationRoutes(deps));
   await app.register(metricsRoutes(deps));
+  if (opts.smokeTest) await app.register(smokeTestRoutes(opts.smokeTest));
   bindFlagJobPool(deps.pool);
   return app;
 }
