@@ -17,6 +17,7 @@
     "vitest": "^4.1.12"
   },
   "dependencies": {
+    "@fastify/cors": "^11.4.1",
     "@fastify/rate-limit": "^11.2.2",
     "@tuma/core": "*",
     "fastify": "^5.12.8",

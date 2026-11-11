@@ -1,3 +1,4 @@
+import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import type pg from 'pg';
@@ -39,6 +40,8 @@ export interface AppOptions {
   topupMaxBalanceCents?: number;
   /** TEST ONLY. Registers GET /smoke-test/code/:phone; leave unset in production use. */
   smokeTest?: SmokeTestOptions;
+  /** Web page origins allowed to read the API from a browser (read-only: GET/HEAD). Empty means none. */
+  corsOrigins?: string[];
 }
 
 export interface Deps {
@@ -95,6 +98,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     req.log.error({ name: e.name, code: e.code }, 'unhandled error');
     return reply.status(500).send({ error: 'internal_error', message: 'Something went wrong' });
   });
+
+  if (opts.corsOrigins && opts.corsOrigins.length > 0) {
+    await app.register(cors, {
+      origin: opts.corsOrigins,
+      methods: ['GET', 'HEAD'],
+      allowedHeaders: ['authorization', 'content-type'],
+      maxAge: 600,
+    });
+  }
 
   app.setNotFoundHandler((_req, reply) => reply.status(404).send({ error: 'not_found', message: 'Not found' }));
 

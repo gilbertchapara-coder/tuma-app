@@ -41,6 +41,7 @@ async function main(): Promise<void> {
     smokeTest: smoke && smokeKey ? { key: smokeKey, sms: smoke } : undefined,
     jwtSecret,
     publicBaseUrl: required('PUBLIC_BASE_URL'),
+    corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),
     adminPhones: (process.env.ADMIN_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',

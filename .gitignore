@@ -2,4 +2,3 @@ node_modules
 dist
 .superpowers
 apps/mobile
-apps/web
