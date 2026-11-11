@@ -3,12 +3,9 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/api"
   ],
   "scripts": {
     "test": "npm test --workspaces --if-present"
-  },
-  "overrides": {
-    "react-server-dom-webpack": "19.0.2"
   }
 }
