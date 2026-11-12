@@ -80,6 +80,8 @@ export const authRoutes =
           await tx.query('UPDATE otp_failures SET failures = 0, window_start = now(), locked_until = NULL WHERE phone = $1', [body.phone]);
         }
         const recordFailure = async (): Promise<void> => {
+          // Admin phones are throttled by the per-code limit and the request cooldown but never locked out for a day.
+          if (deps.adminPhones.includes(body.phone)) return;
           await tx.query(
             `UPDATE otp_failures SET failures = failures + 1,
                locked_until = CASE WHEN failures + 1 >= $2 THEN now() + $3 * interval '1 hour' ELSE locked_until END

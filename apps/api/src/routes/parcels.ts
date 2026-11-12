@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import {
   appendEvent,
   checkCode,
+  countryFromPhone,
   distanceExtraCents,
   distanceKm,
   MAX_CODE_ATTEMPTS,
@@ -33,6 +34,7 @@ import { assertOwnPhoto } from './photos';
 import { centsSchema, httpsUrl, parse, phoneSchema, uuidParam } from '../validate';
 
 const TRACK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const MAX_BOOKINGS_PER_HOUR = 60;
 const MAX_VALUE_CENTS = 100_000_00;
 
 const suburbSchema = z.string().trim().min(1).max(80);
@@ -209,6 +211,10 @@ export const parcelRoutes =
     app.post('/parcels', { preHandler: shop }, async (req, reply) => {
       const b = parse(bookingBody, req.body);
       const shopId = userOf(req).id;
+      // A delivery-code SMS goes to this number, so it must be from a country Tuma serves, and one shop cannot book without limit.
+      if (!countryFromPhone(b.recipientPhone)) throw new HttpError(400, 'unsupported_country', 'recipientPhone: Tuma only delivers to Zimbabwe and Zambia numbers');
+      const recentBookings = await deps.pool.query("SELECT count(*)::int AS n FROM parcels WHERE shop_id = $1 AND created_at > now() - interval '1 hour'", [shopId]);
+      if ((recentBookings.rows[0].n as number) >= MAX_BOOKINGS_PER_HOUR) throw new HttpError(429, 'too_many_requests', 'Too many bookings in the last hour, try again later');
       const sealedPhotoUrl = b.sealedPhotoUrl ? await assertOwnPhoto(deps.pool, deps.publicBaseUrl, b.sealedPhotoUrl, shopId, 'sealedPhotoUrl') : undefined;
       const country = await userCountry(deps.pool, shopId);
       const cfg = await countryConfig(deps.pool, country);

@@ -45,7 +45,12 @@ async function main(): Promise<void> {
   await migrate(pool);
   // TEST ONLY: both variables must be set. Only the listed phones get codes, readable with the key.
   const smokeKey = process.env.SMOKE_TEST_KEY;
-  const smokePhones = (process.env.SMOKE_TEST_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const adminPhones = (process.env.ADMIN_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  // An admin phone must never be readable through the smoke-test route, even if it is listed by mistake.
+  const smokePhones = (process.env.SMOKE_TEST_PHONES ?? '').split(',').map((s) => s.trim()).filter((p) => p && !adminPhones.includes(p));
+  if (process.env.RAILWAY_ENVIRONMENT && process.env.TRUST_PROXY === undefined) {
+    console.warn('TRUST_PROXY is not set on Railway: rate limits will see one shared IP. Set TRUST_PROXY=1.');
+  }
   const smoke = smokeKey && smokePhones.length > 0 ? createSmokeTestSms(smokePhones) : undefined;
   if (smoke) console.warn(`SMOKE TEST MODE ON for ${smokePhones.length} phone(s). Remove SMOKE_TEST_KEY to turn it off.`);
   const app = await buildApp({
@@ -59,7 +64,7 @@ async function main(): Promise<void> {
     trustProxy: trustProxyHops(),
     publicBaseUrl: required('PUBLIC_BASE_URL'),
     corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),
-    adminPhones: (process.env.ADMIN_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    adminPhones,
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
       redact: ['req.headers.authorization'],
