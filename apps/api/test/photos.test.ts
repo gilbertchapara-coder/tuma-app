@@ -128,11 +128,12 @@ describe('photo urls on parcels', () => {
     expect((await post(mine)).statusCode).toBe(201);
     expect((await post(theirs)).statusCode).toBe(400);
     // An upper-case id is stored in the canonical lower-case form so the counterparty can see the evidence.
-    const upper = mine.replace(/[0-9a-f-]{36}$/, (id) => id.toUpperCase());
+    const fresh = (await upload(shop.token, jpeg())).json().url as string;
+    const upper = fresh.replace(/[0-9a-f-]{36}$/, (id) => id.toUpperCase());
     const res = await post(upper);
     expect(res.statusCode).toBe(201);
     const stored = await ctx.pool.query('SELECT photo_url FROM custody_events WHERE parcel_id = $1 AND type = $2', [res.json().parcelId, 'sealed']);
-    expect(stored.rows[0].photo_url).toBe(mine);
+    expect(stored.rows[0].photo_url).toBe(fresh);
     expect((await post('https://evil.test/photos/00000000-0000-4000-8000-000000000000')).statusCode).toBe(400);
     expect((await post('https://tuma.test/photos/00000000-0000-4000-8000-000000000000')).statusCode).toBe(400);
   });

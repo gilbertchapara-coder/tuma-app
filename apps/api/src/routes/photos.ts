@@ -7,6 +7,7 @@ import { HttpError } from '../errors';
 
 export const MAX_PHOTO_BYTES = 400 * 1024;
 const MAX_PHOTOS_PER_HOUR = 60;
+const PHOTO_USABLE_FOR = '1 day';
 const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -23,7 +24,13 @@ export async function assertOwnPhoto(db: pg.Pool | pg.PoolClient, publicBaseUrl:
   const id = photoIdOf(publicBaseUrl, url);
   const found = id ? (await db.query('SELECT 1 FROM photos WHERE id = $1 AND owner_id = $2', [id, actorId])).rowCount : 0;
   if (!id || !found) throw new HttpError(400, 'validation', `${field}: use a photo taken in the app`);
-  return `${publicBaseUrl}/photos/${id}`;
+  const canonical = `${publicBaseUrl}/photos/${id}`;
+  // A photo is evidence for one handover. A phone that was offline may send late, so allow a day, not more.
+  const fresh = await db.query(`SELECT 1 FROM photos WHERE id = $1 AND created_at > now() - interval '${PHOTO_USABLE_FOR}'`, [id]);
+  if (!fresh.rowCount) throw new HttpError(400, 'validation', `${field}: that photo is too old, take a new one`);
+  const used = await db.query('SELECT 1 FROM custody_events WHERE photo_url = $1 LIMIT 1', [canonical]);
+  if (used.rowCount) throw new HttpError(400, 'validation', `${field}: that photo was already used, take a new one`);
+  return canonical;
 }
 
 export const photoRoutes =

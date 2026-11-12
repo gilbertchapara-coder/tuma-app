@@ -2,6 +2,7 @@ import pg from 'pg';
 import { buildApp } from './app';
 import { migrate } from './db';
 import type { CodeNotifier, OtpProvider } from './ports';
+import { startOtpFailurePurge } from './jobs/purgeOtpFailures';
 import { createSmokeTestSms } from './smokeTestSms';
 
 function required(name: string): string {
@@ -24,6 +25,18 @@ const consoleSms: OtpProvider & CodeNotifier = {
 };
 
 
+/** TRUST_PROXY=1 on Railway. Unset means do not trust forwarded headers. Anything but a small whole number stops the start. */
+function trustProxyHops(): number | undefined {
+  const raw = process.env.TRUST_PROXY;
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 5) {
+    console.error('TRUST_PROXY must be a whole number from 0 to 5');
+    process.exit(1);
+  }
+  return n;
+}
+
 async function main(): Promise<void> {
   const jwtSecret = required('JWT_SECRET');
   const databaseUrl = required('DATABASE_URL');
@@ -40,6 +53,7 @@ async function main(): Promise<void> {
     notifier: smoke ? smoke.notifier : consoleSms,
     smokeTest: smoke && smokeKey ? { key: smokeKey, sms: smoke } : undefined,
     jwtSecret,
+    trustProxy: trustProxyHops(),
     publicBaseUrl: required('PUBLIC_BASE_URL'),
     corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),
     adminPhones: (process.env.ADMIN_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
@@ -55,6 +69,7 @@ async function main(): Promise<void> {
       },
     },
   });
+  startOtpFailurePurge(pool, (msg) => app.log.warn(msg));
   await app.listen({ port: Number(process.env.PORT ?? 3000), host: process.env.HOST ?? '0.0.0.0' });
 }
 

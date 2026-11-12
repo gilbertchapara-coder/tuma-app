@@ -32,6 +32,8 @@ export interface AppOptions {
   otpCooldownMs?: number;
   /** Requests per minute per IP on /auth/*. Default 10. */
   authRateLimitPerMinute?: number;
+  /** Number of proxies in front of the API (Railway: 1). Needed so per-IP limits see the real client, not the proxy. Off by default because a wrong value lets clients fake their IP. */
+  trustProxy?: number;
   logger?: boolean | object;
   /** Wallet adapter for rider float top-ups. */
   topupProvider?: TopupProvider;
@@ -78,7 +80,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     topupMaxBalanceCents: opts.topupMaxBalanceCents ?? DEFAULT_TOPUP_MAX_BALANCE_CENTS,
   };
 
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: BODY_LIMIT_BYTES });
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    bodyLimit: BODY_LIMIT_BYTES,
+    // proxy-addr takes a hop count; Fastify's overload typing only lists boolean here.
+    trustProxy: (opts.trustProxy ?? false) as boolean,
+  });
+
+  // For the host's health check: answers without touching the database.
+  app.get('/health', async () => ({ ok: true }));
 
   app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof HttpError) {
