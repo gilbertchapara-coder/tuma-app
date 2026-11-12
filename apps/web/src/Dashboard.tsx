@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
+import { LockedCodes, type LockedCodesApi } from './LockedCodes';
 import { runName } from './runNames';
 
 export interface Metrics {
   parcelsPerRun: Array<{ run: string; date: string; count: number }>;
   ridersActive: number;
   feesCents: number;
+  /** Fees per country, each in its own currency. Older servers leave this out. */
+  feesByCountry?: Array<{ country: string; currencySymbol: string; cents: number }>;
 }
 
 /** A run with fewer parcels than this on a day is flagged (pilot placeholder). */
@@ -12,11 +15,19 @@ export const MIN_PARCELS_PER_RUN = 5;
 
 interface DashboardProps {
   load: () => Promise<Metrics>;
+  /** Support tools. Without it the Locked codes tab is not shown. */
+  codes?: LockedCodesApi;
 }
 
-const dollars = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
+const money = (symbol: string, cents: number): string => `${symbol}${(cents / 100).toFixed(2)}`;
 
-export function Dashboard({ load }: DashboardProps) {
+const feesText = (m: Metrics): string =>
+  m.feesByCountry && m.feesByCountry.length > 0
+    ? m.feesByCountry.map((f) => money(f.currencySymbol, f.cents)).join(' and ')
+    : money('$', m.feesCents);
+
+export function Dashboard({ load, codes }: DashboardProps) {
+  const [tab, setTab] = useState<'numbers' | 'locked'>('numbers');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -37,8 +48,16 @@ export function Dashboard({ load }: DashboardProps) {
   return (
     <main className="card">
       <h1>Tuma pilot</h1>
+      {codes ? (
+        <div role="tablist" aria-label="Dashboard sections" className="tabs">
+          <button type="button" role="tab" aria-selected={tab === 'numbers'} onClick={() => setTab('numbers')}>Numbers</button>
+          <button type="button" role="tab" aria-selected={tab === 'locked'} onClick={() => setTab('locked')}>Locked codes</button>
+        </div>
+      ) : null}
+      {codes && tab === 'locked' ? <LockedCodes api={codes} /> : (
+        <>
       <p className="summary">
-        <strong>{metrics.ridersActive}</strong> riders active this week. <strong>{dollars(metrics.feesCents)}</strong> in
+        <strong>{metrics.ridersActive}</strong> riders active this week. <strong>{feesText(metrics)}</strong> in
         fees earned.
       </p>
       <h2>Parcels per run</h2>
@@ -65,6 +84,8 @@ export function Dashboard({ load }: DashboardProps) {
             ))}
           </tbody>
         </table>
+      )}
+        </>
       )}
     </main>
   );

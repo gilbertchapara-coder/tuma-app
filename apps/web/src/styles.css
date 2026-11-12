@@ -41,3 +41,11 @@ th { color: var(--ink-soft); font-weight: 600; }
 @media (max-width: 30rem) {
   .flag { display: block; font-size: 0.875rem; }
 }
+
+.tabs { display: flex; gap: var(--space-1); margin: var(--space-2) 0; }
+.tabs button { padding: 0.5rem 1rem; border: 1px solid var(--line); background: transparent; font: inherit; color: var(--ink); cursor: pointer; }
+.tabs button[aria-selected='true'] { border-color: var(--ink); font-weight: 600; }
+.lock-list { list-style: none; padding: 0; margin: 0; }
+.lock-row { padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+.lock-row fieldset { border: 0; padding: 0; margin: var(--space-1) 0 0; display: grid; gap: var(--space-1); }
+.note-inline { color: var(--ink-soft); margin: 0.25rem 0; }
