@@ -1,6 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Dashboard, type Metrics } from './Dashboard';
+import type { ClaimsApi, Claim } from './ClaimsAdmin';
+import type { AdminCountry, CountriesApi } from './CountriesAdmin';
 import type { LockedCodesApi, LockedParcel } from './LockedCodes';
 import { API_BASE } from './api';
 import { Track, loadTrack } from './Track';
@@ -15,7 +17,7 @@ async function loadMetrics(): Promise<Metrics> {
   return (await res.json()) as Metrics;
 }
 
-async function adminCall<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+async function adminCall<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
   const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -32,11 +34,25 @@ const lockedCodesApi: LockedCodesApi = {
   },
 };
 
+const countriesApi: CountriesApi = {
+  list: async () => (await adminCall<{ countries: AdminCountry[] }>('GET', '/admin/countries')).countries,
+  save: async (code, settings) => {
+    await adminCall('PUT', `/admin/countries/${code}`, settings);
+  },
+};
+
+const claimsApi: ClaimsApi = {
+  open: async () => (await adminCall<{ claims: Claim[] }>('GET', '/claims?status=open')).claims,
+  dismiss: async (claimId) => {
+    await adminCall('POST', `/claims/${claimId}/dismiss`, {});
+  },
+};
+
 function App() {
   const path = window.location.pathname;
   const track = /^\/track\/([A-Za-z0-9_-]+)$/.exec(path);
   if (track?.[1]) return <Track token={track[1]} load={loadTrack} />;
-  if (path === '/dashboard') return <Dashboard load={loadMetrics} codes={lockedCodesApi} />;
+  if (path === '/dashboard') return <Dashboard load={loadMetrics} codes={lockedCodesApi} countries={countriesApi} claims={claimsApi} />;
   return <p className="note">Nothing here. Use the link you were sent.</p>;
 }
 

@@ -29,6 +29,20 @@ async function find(urlPath) {
   return null;
 }
 
+// API origin is allowed for fetch; fonts come from Google Fonts (index.html). No inline scripts.
+const API = (process.env.VITE_API_URL ?? process.env.API_URL ?? '').replace(/\/+$/, '');
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  `connect-src 'self' ${API || 'https:'}`,
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "object-src 'none'",
+].join('; ');
+
 createServer(async (req, res) => {
   try {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -41,6 +55,11 @@ createServer(async (req, res) => {
       'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
       'cache-control': file.includes(`${sep}assets${sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache',
       'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+      'strict-transport-security': 'max-age=31536000; includeSubDomains',
+      'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+      'content-security-policy': CSP,
     });
     res.end(req.method === 'HEAD' ? undefined : body);
   } catch {
