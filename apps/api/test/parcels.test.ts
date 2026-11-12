@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { auth, book, bookingBody, createCtx, makeRider, buildBundles, type TestCtx } from './helpers';
+import { auth, book, bookingBody, createCtx, makeRider, buildBundles, type TestCtx, uploadPhoto } from './helpers';
 
 let ctx: TestCtx;
 let shop: { token: string; id: string };
@@ -66,7 +66,7 @@ describe('POST /parcels booking', () => {
       p.parcelId,
     ]);
     expect(ev.rows.map((r) => r.type)).toEqual(['booked', 'sealed']);
-    expect(ev.rows[1].photo_url).toBe('https://photos.test/sealed.jpg');
+    expect(ev.rows[1].photo_url).toMatch(/^https:\/\/tuma\.test\/photos\/[0-9a-f-]{36}$/);
     expect(ctx.notifier.codes.get('+263772000111')).toMatch(/^[0-9]{6}$/);
   });
 
@@ -117,7 +117,7 @@ describe('custody events', () => {
       method: 'POST',
       url: `/parcels/${p.parcelId}/events`,
       headers: auth(stranger.token),
-      payload: { type: 'pickup_confirmed', photoUrl: 'https://photos.test/pickup.jpg' },
+      payload: { type: 'pickup_confirmed', photoUrl: await uploadPhoto(ctx, stranger.token) },
     });
     expect(res.statusCode).toBe(403);
     const ev = await ctx.pool.query('SELECT count(*)::int AS n FROM custody_events WHERE parcel_id = $1', [p.parcelId]);

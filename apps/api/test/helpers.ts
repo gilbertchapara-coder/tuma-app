@@ -155,16 +155,35 @@ export const bookingBody = (over: Record<string, unknown> = {}) => ({
   contents: 'Phone case',
   recipientPhone: '+263771234567',
   recipientPhoneConfirm: '+263771234567',
-  sealedPhotoUrl: 'https://photos.test/sealed.jpg',
   ...over,
 });
 
+/** Uploads a small real JPEG and returns the photo's URL, as the app does before booking or scanning. */
+export async function uploadPhoto(ctx: TestCtx, token: string): Promise<string> {
+  const jpeg = Buffer.alloc(1500, 7);
+  jpeg[0] = 0xff;
+  jpeg[1] = 0xd8;
+  jpeg[2] = 0xff;
+  jpeg[jpeg.length - 2] = 0xff;
+  jpeg[jpeg.length - 1] = 0xd9;
+  // Parallel uploads from one user get 429 by design (one at a time), so tests that book in parallel retry briefly.
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const res = await ctx.app.inject({ method: 'POST', url: '/photos', headers: { ...auth(token), 'content-type': 'image/jpeg' }, payload: jpeg });
+    if (res.statusCode === 201) return (res.json() as { url: string }).url;
+    if (res.statusCode !== 429 || !/still uploading/.test(res.body)) throw new Error(`photo ${res.statusCode} ${res.body}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error('photo upload kept being busy');
+}
+
+/** Books a parcel with a real sealed photo, unless the caller sets sealedPhotoUrl themselves (even to undefined). */
 export async function book(ctx: TestCtx, shopToken: string, over: Record<string, unknown> = {}) {
+  const sealedPhotoUrl = 'sealedPhotoUrl' in over ? over.sealedPhotoUrl : await uploadPhoto(ctx, shopToken);
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/parcels',
     headers: auth(shopToken),
-    payload: bookingBody(over),
+    payload: bookingBody({ ...over, sealedPhotoUrl }),
   });
   if (res.statusCode !== 200 && res.statusCode !== 201) throw new Error(`book ${res.statusCode} ${res.body}`);
   return res.json() as { parcelId: string; priceCents: number; trackingUrl: string };

@@ -26,6 +26,19 @@ export const riderRoutes =
 
     app.get('/riders/me', { preHandler: rider }, async (req) => riderSummary(deps.pool, userOf(req).id));
 
+    // The rider's current run: accepted parcels that have not ended (delivered, cancelled, lost or refused).
+    app.get('/riders/me/run', { preHandler: rider }, async (req) => {
+      const { rows } = await deps.pool.query(
+        `SELECT p.id, p.suburb FROM parcels p
+         WHERE p.rider_id = $1
+           AND COALESCE((SELECT e.type FROM custody_events e WHERE e.parcel_id = p.id ORDER BY e.id DESC LIMIT 1), '')
+               NOT IN ('delivered', 'cancelled', 'reported_lost', 'refused_by_rider')
+         ORDER BY p.created_at, p.id`,
+        [userOf(req).id],
+      );
+      return { parcels: rows.map((r) => ({ id: r.id as string, suburb: r.suburb as string })) };
+    });
+
     // Float top-ups and deposits are admin-recorded until a payment provider is wired in.
     app.post('/riders/:id/topup', { preHandler: admin }, async (req) => {
       const { id } = parse(uuidParam, req.params);

@@ -19,6 +19,7 @@ import { requireRole, userOf, type Role } from '../auth';
 import { withTx } from '../db';
 import { HttpError } from '../errors';
 import { insertEntries, insertEvent, loadEntries, loadEvents, lockRider } from '../repo';
+import { assertOwnPhoto } from './photos';
 import { centsSchema, httpsUrl, parse, phoneSchema, uuidParam } from '../validate';
 
 const TRACK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -151,6 +152,7 @@ export const parcelRoutes =
     app.post('/parcels', { preHandler: shop }, async (req, reply) => {
       const b = parse(bookingBody, req.body);
       const shopId = userOf(req).id;
+      const sealedPhotoUrl = b.sealedPhotoUrl ? await assertOwnPhoto(deps.pool, deps.publicBaseUrl, b.sealedPhotoUrl, shopId, 'sealedPhotoUrl') : undefined;
       const price = priceCents(b.suburb, b.level);
       const token = randomBytes(32).toString('base64url');
       const { code, record } = issueCode();
@@ -164,8 +166,8 @@ export const parcelRoutes =
         const id = ins.rows[0].id as string;
 
         let events: CustodyEvent[] = appendEvent([], { type: 'booked', at: new Date().toISOString(), actor: 'shop' });
-        if (b.sealedPhotoUrl) {
-          events = appendEvent(events, { type: 'sealed', at: new Date().toISOString(), actor: 'shop', photoUrl: b.sealedPhotoUrl });
+        if (sealedPhotoUrl) {
+          events = appendEvent(events, { type: 'sealed', at: new Date().toISOString(), actor: 'shop', photoUrl: sealedPhotoUrl });
         }
         for (const e of events) await insertEvent(tx, id, e);
 
@@ -255,6 +257,7 @@ export const parcelRoutes =
         if (!ROLE_EVENTS[user.role].includes(body.type)) {
           throw new HttpError(403, 'forbidden', `A ${user.role} cannot record ${body.type}`);
         }
+        if (body.photoUrl) body.photoUrl = await assertOwnPhoto(deps.pool, deps.publicBaseUrl, body.photoUrl, user.id, 'photoUrl');
         if (body.type === 'sealed' && !body.photoUrl) {
           throw new HttpError(400, 'validation', 'photoUrl: a sealed event needs a photo of the sealed parcel');
         }

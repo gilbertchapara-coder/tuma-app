@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app';
-import { auth, book, createCtx, makeRider, type TestCtx } from './helpers';
+import { auth, book, createCtx, makeRider, type TestCtx, uploadPhoto } from './helpers';
 
 let ctx: TestCtx;
 let shop: { token: string; id: string };
@@ -40,7 +40,7 @@ async function accepted(level: 'express' = 'express') {
 }
 async function pickedUp() {
   const a = await accepted();
-  expect((await event(a.p.parcelId, a.rider.token, 'pickup_confirmed', 'https://photos.test/pickup.jpg')).statusCode).toBe(201);
+  expect((await event(a.p.parcelId, a.rider.token, 'pickup_confirmed', await uploadPhoto(ctx, a.rider.token))).statusCode).toBe(201);
   return a;
 }
 const terminalCount = async (parcelId: string) =>

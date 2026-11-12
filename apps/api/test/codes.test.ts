@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { auth, book, createCtx, makeRider, type TestCtx } from './helpers';
+import { auth, book, createCtx, makeRider, type TestCtx, uploadPhoto } from './helpers';
 
 let ctx: TestCtx;
 let shop: { token: string; id: string };
@@ -28,7 +28,7 @@ async function pickedUp(n: number) {
     method: 'POST',
     url: `/parcels/${p.parcelId}/events`,
     headers: auth(rider.token),
-    payload: { type: 'pickup_confirmed', photoUrl: 'https://photos.test/pickup.jpg' },
+    payload: { type: 'pickup_confirmed', photoUrl: await uploadPhoto(ctx, rider.token) },
   });
   expect(pk.statusCode).toBe(201);
   return { p, rider, code: ctx.notifier.codes.get(phone) as string };

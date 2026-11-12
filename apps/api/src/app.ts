@@ -13,6 +13,7 @@ import { locationRoutes } from './routes/location';
 import { metricsRoutes } from './routes/metrics';
 import { codeRoutes } from './routes/codes';
 import { parcelRoutes } from './routes/parcels';
+import { photoRoutes } from './routes/photos';
 import { riderRoutes } from './routes/riders';
 import { topupRoutes } from './routes/topup';
 import { smokeTestRoutes, type SmokeTestOptions } from './smokeTestSms';
@@ -113,6 +114,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(authRoutes(deps));
   await app.register(riderRoutes(deps));
   await app.register(topupRoutes(deps));
+  await app.register(photoRoutes(deps));
   await app.register(parcelRoutes(deps));
   await app.register(bundleRoutes(deps));
   await app.register(codeRoutes(deps));

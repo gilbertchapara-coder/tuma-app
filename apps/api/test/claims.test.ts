@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runFlagJob } from '../src/jobs/flagJob';
-import { auth, book, createCtx, makeRider, type TestCtx } from './helpers';
+import { auth, book, createCtx, makeRider, type TestCtx, uploadPhoto } from './helpers';
 
 let ctx: TestCtx;
 let shop: { token: string; id: string };
@@ -43,7 +43,7 @@ async function accepted(opts: { valueCents?: number; topupCents?: number; deposi
 }
 async function pickedUp(opts: Parameters<typeof accepted>[0] = {}) {
   const a = await accepted(opts);
-  expect((await event(a.p.parcelId, a.rider.token, 'pickup_confirmed', 'https://photos.test/pickup.jpg')).statusCode).toBe(201);
+  expect((await event(a.p.parcelId, a.rider.token, 'pickup_confirmed', await uploadPhoto(ctx, a.rider.token))).statusCode).toBe(201);
   return a;
 }
 
@@ -244,7 +244,7 @@ describe('runFlagJob', () => {
       const p = await book(ctx, shop.token, { level: 'express', suburb, valueCents: 1500, recipientPhone: phone, recipientPhoneConfirm: phone });
       expect((await accept(await bundleOf(p.parcelId), rider.token)).statusCode).toBe(200);
       if (beforePickup && parcels.length === 0) await beforePickup(rider.id);
-      expect((await event(p.parcelId, rider.token, 'pickup_confirmed', 'https://photos.test/pickup.jpg')).statusCode).toBe(201);
+      expect((await event(p.parcelId, rider.token, 'pickup_confirmed', await uploadPhoto(ctx, rider.token))).statusCode).toBe(201);
       parcels.push(p.parcelId);
     }
     return { rider, parcels };

@@ -1,6 +1,6 @@
 import { liableParty, type CustodyEvent } from '@tuma/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { auth, book, buildBundles, createCtx, makeRider, type TestCtx } from './helpers';
+import { auth, book, buildBundles, createCtx, makeRider, type TestCtx, uploadPhoto } from './helpers';
 
 let ctx: TestCtx;
 beforeAll(async () => {
@@ -53,7 +53,7 @@ describe('pilot flow: South-West run, 3 Standard parcels', () => {
         method: 'POST',
         url: `/parcels/${p.parcelId}/events`,
         headers: auth(rider.token),
-        payload: { type: 'pickup_confirmed', photoUrl: 'https://photos.test/pickup.jpg' },
+        payload: { type: 'pickup_confirmed', photoUrl: await uploadPhoto(ctx, rider.token) },
       });
       expect(pk.statusCode).toBe(201);
     }
