@@ -14,3 +14,4 @@ export * from './distance';
 export { COUNTRIES, COUNTRY_CODES, countryFromPhone, findSuburbEntryFor, formatMoney, getCountry, isCountryCode, isCountryConfigured, percentFeeCents, priceCentsFor, withOverrides } from './countries';
 export type { CountryCode, CountryConfig, CountryOverrides, PriceRow } from './countries';
 export { parcelReference, referencePrefix } from './reference';
+export * from './geo';

@@ -1,8 +1,10 @@
-import { COUNTRY_CODES, isCountryConfigured, isCountryCode, percentFeeCents, type CountryCode, type CountryConfig } from '@tuma/core';
+import { COUNTRY_CODES, countryFromCoords, isCountryConfigured, isCountryCode, percentFeeCents, type CountryCode, type CountryConfig } from '@tuma/core';
 import type { FastifyPluginAsync } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { z } from 'zod';
 import type { Deps } from '../app';
 import { requireRole, userOf } from '../auth';
+import { withTx } from '../db';
 import { countryConfig, userCountry } from '../repo';
 import { HttpError } from '../errors';
 import { parse } from '../validate';
@@ -25,6 +27,8 @@ const switchBody = z
   .object({ country: z.string().refine((s): s is CountryCode => isCountryCode(s), { message: `must be one of ${COUNTRY_CODES.join(', ')}` }) })
   .strict();
 
+const positionBody = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) }).strict();
+
 export const meRoutes =
   (deps: Deps): FastifyPluginAsync =>
   async (app) => {
@@ -40,21 +44,42 @@ export const meRoutes =
 
     // A user who travels (a rider going from Zimbabwe to Zambia) switches country and starts working there at once.
     // Their account, level and loyalty stay. Float is kept per country: Zambia float is separate from Zimbabwe float.
+    const switchTo = async (id: string, country: CountryCode): Promise<Record<string, unknown>> => {
+      // A rider cannot move away while parcels are still on the road: they are backed by this country's deposit.
+      // The check and the change happen together under a lock on the user, and a parcel with no events yet counts as busy.
+      await withTx(deps.pool, async (tx) => {
+        await tx.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [id]);
+        const busy = await tx.query(
+          `SELECT 1 FROM parcels p
+           WHERE p.rider_id = $1
+             AND COALESCE((SELECT e.type FROM custody_events e WHERE e.parcel_id = p.id ORDER BY e.id DESC LIMIT 1), 'assigned')
+                 NOT IN ('delivered', 'cancelled', 'reported_lost', 'refused_by_rider')
+           LIMIT 1`,
+          [id],
+        );
+        if (busy.rowCount) throw new HttpError(409, 'parcels_in_progress', 'Finish or hand back your parcels before changing country');
+        await tx.query('UPDATE users SET country = $2 WHERE id = $1', [id, country]);
+      });
+      return publicCountry(await countryConfig(deps.pool, country));
+    };
+
     app.post('/me/country', { preHandler: anyUser }, async (req) => {
       const { country } = parse(switchBody, req.body) as { country: CountryCode };
+      return { country: await switchTo(userOf(req).id, country) };
+    });
+
+    // The rider's phone reports where it is. If that is clearly another country Tuma serves, the rider moves there
+    // at once: currency, delivery areas and prices follow, and float stays separate per country.
+    // Unclear positions (near a border, or outside both countries) change nothing.
+    // Limited per IP (generous, because mobile networks share addresses); the app asks about once every five minutes.
+    await app.register(rateLimit, { global: false });
+    app.post('/me/country/detect', { preHandler: rider, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req) => {
+      const pos = parse(positionBody, req.body);
+      const found = countryFromCoords(pos);
+      if (!found) return { changed: false, reason: 'unclear' };
       const id = userOf(req).id;
-      // A rider cannot move away while parcels are still on the road: they are backed by this country's deposit.
-      const busy = await deps.pool.query(
-        `SELECT 1 FROM parcels p
-         WHERE p.rider_id = $1
-           AND (SELECT e.type FROM custody_events e WHERE e.parcel_id = p.id ORDER BY e.id DESC LIMIT 1)
-               NOT IN ('delivered', 'cancelled', 'reported_lost', 'refused_by_rider')
-         LIMIT 1`,
-        [id],
-      );
-      if (busy.rowCount) throw new HttpError(409, 'parcels_in_progress', 'Finish or hand back your parcels before changing country');
-      await deps.pool.query('UPDATE users SET country = $2 WHERE id = $1', [id, country]);
-      return { country: publicCountry(await countryConfig(deps.pool, country)) };
+      if ((await userCountry(deps.pool, id)) === found) return { changed: false, reason: 'same_country' };
+      return { changed: true, country: await switchTo(id, found) };
     });
 
     // Today's earnings for the rider, in the rider's current country, by that country's clock.
