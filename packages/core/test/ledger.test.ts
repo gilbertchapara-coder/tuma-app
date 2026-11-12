@@ -1,5 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { platformFeeCents } from '../src/pricing';
+import { describe, expect, it } from 'vitest';
 import {
   InsufficientFloatError,
   InvalidAmountError,
@@ -13,17 +12,10 @@ import {
   type Entry,
 } from '../src/ledger';
 
-vi.mock('../src/pricing', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/pricing')>();
-  return { ...actual, platformFeeCents: vi.fn(actual.platformFeeCents) };
-});
-
 const T = '2026-11-09T08:00:00Z';
+/** A sample fee. The real fee is a percentage of the run price, worked out by the caller. */
+const FEE = 25;
 const funded = (cents: number): Entry[] => topup([], cents, T);
-
-afterEach(() => {
-  delete process.env.PLATFORM_FEE_CENTS;
-});
 
 describe('topup and balance', () => {
   it('starts at zero and adds top-ups', () => {
@@ -41,35 +33,34 @@ describe('topup and balance', () => {
 
 describe('chargeFee', () => {
   it('charges 25 from a 500 top-up leaving 475', () => {
-    const e = chargeFee(funded(500), 'job1', T);
+    const e = chargeFee(funded(500), 'job1', T, FEE);
     expect(balanceCents(e)).toBe(475);
     expect(e[e.length - 1]).toEqual({ type: 'fee', cents: 25, at: T, jobId: 'job1' });
   });
-  it('uses PLATFORM_FEE_CENTS when set', () => {
-    process.env.PLATFORM_FEE_CENTS = '40';
-    expect(balanceCents(chargeFee(funded(500), 'job1', T))).toBe(460);
+  it('takes whatever fee the caller worked out', () => {
+    expect(balanceCents(chargeFee(funded(500), 'job1', T, 40))).toBe(460);
   });
   it('throws with balance 20 and leaves entries unchanged', () => {
     const e = funded(20);
     const snapshot = JSON.stringify(e);
-    expect(() => chargeFee(e, 'job1', T)).toThrow(InsufficientFloatError);
+    expect(() => chargeFee(e, 'job1', T, FEE)).toThrow(InsufficientFloatError);
     expect(JSON.stringify(e)).toBe(snapshot);
     expect(e).toHaveLength(1);
   });
   it('charges the same jobId once', () => {
-    const once = chargeFee(funded(500), 'job1', T);
-    const twice = chargeFee(once, 'job1', T);
+    const once = chargeFee(funded(500), 'job1', T, FEE);
+    const twice = chargeFee(once, 'job1', T, FEE);
     expect(twice).toBe(once);
     expect(balanceCents(twice)).toBe(475);
   });
   it('does not throw on a repeat charge even when float is now too low', () => {
-    const once = chargeFee(funded(25), 'job1', T);
+    const once = chargeFee(funded(25), 'job1', T, FEE);
     expect(balanceCents(once)).toBe(0);
-    expect(chargeFee(once, 'job1', T)).toBe(once);
+    expect(chargeFee(once, 'job1', T, FEE)).toBe(once);
   });
   it('never mutates its input', () => {
     const e = funded(500);
-    const out = chargeFee(e, 'job1', T);
+    const out = chargeFee(e, 'job1', T, FEE);
     expect(e).toHaveLength(1);
     expect(out).not.toBe(e);
   });
@@ -79,55 +70,40 @@ describe('chargeFee fee validation', () => {
   it.each([NaN, -5, 1.5, Infinity])('throws on fee %s and leaves entries unchanged', (bad) => {
     const e = funded(500);
     const snapshot = JSON.stringify(e);
-    vi.mocked(platformFeeCents).mockReturnValueOnce(bad);
-    expect(() => chargeFee(e, 'job1', T)).toThrow(InvalidAmountError);
+    expect(() => chargeFee(e, 'job1', T, bad)).toThrow(InvalidAmountError);
     expect(JSON.stringify(e)).toBe(snapshot);
   });
   it('a zero fee records nothing and does not throw', () => {
     const e = funded(500);
-    vi.mocked(platformFeeCents).mockReturnValueOnce(0);
-    expect(chargeFee(e, 'job1', T)).toBe(e);
-  });
-  it('env values abc, -5 and 1.5 fall back to the default fee of 25', () => {
-    const saved = process.env.PLATFORM_FEE_CENTS;
-    try {
-      for (const raw of ['abc', '-5', '1.5']) {
-        process.env.PLATFORM_FEE_CENTS = raw;
-        expect(balanceCents(chargeFee(funded(500), 'job1', T))).toBe(475);
-      }
-    } finally {
-      if (saved === undefined) delete process.env.PLATFORM_FEE_CENTS;
-      else process.env.PLATFORM_FEE_CENTS = saved;
-    }
+    expect(chargeFee(e, 'job1', T, 0)).toBe(e);
   });
 });
 
 describe('refundFee', () => {
   it('restores 25', () => {
-    const e = refundFee(chargeFee(funded(500), 'job1', T), 'job1', T);
+    const e = refundFee(chargeFee(funded(500), 'job1', T, FEE), 'job1', T);
     expect(balanceCents(e)).toBe(500);
   });
   it('refunds only once', () => {
-    const once = refundFee(chargeFee(funded(500), 'job1', T), 'job1', T);
+    const once = refundFee(chargeFee(funded(500), 'job1', T, FEE), 'job1', T);
     const twice = refundFee(once, 'job1', T);
     expect(twice).toBe(once);
     expect(balanceCents(twice)).toBe(500);
   });
   it('returns entries unchanged when no fee was charged for that job', () => {
-    const e = chargeFee(funded(500), 'job1', T);
+    const e = chargeFee(funded(500), 'job1', T, FEE);
     expect(refundFee(e, 'other', T)).toBe(e);
   });
-  it('refunds the amount actually charged, even if the fee setting changed', () => {
-    const charged = chargeFee(funded(500), 'job1', T);
-    process.env.PLATFORM_FEE_CENTS = '50';
+  it('refunds the amount actually charged', () => {
+    const charged = chargeFee(funded(500), 'job1', T, 40);
     expect(balanceCents(refundFee(charged, 'job1', T))).toBe(500);
   });
   it('does not re-charge a job whose fee was refunded', () => {
-    const refunded = refundFee(chargeFee(funded(500), 'job1', T), 'job1', T);
-    expect(chargeFee(refunded, 'job1', T)).toBe(refunded);
+    const refunded = refundFee(chargeFee(funded(500), 'job1', T, FEE), 'job1', T);
+    expect(chargeFee(refunded, 'job1', T, FEE)).toBe(refunded);
   });
   it('does not mutate its input', () => {
-    const charged = chargeFee(funded(500), 'job1', T);
+    const charged = chargeFee(funded(500), 'job1', T, FEE);
     const n = charged.length;
     refundFee(charged, 'job1', T);
     expect(charged).toHaveLength(n);
@@ -247,7 +223,7 @@ describe('property: pots never negative', () => {
               e = topup(e, amount, T);
               break;
             case 1:
-              e = chargeFee(e, job, T);
+              e = chargeFee(e, job, T, FEE);
               break;
             case 2:
               e = refundFee(e, job, T);

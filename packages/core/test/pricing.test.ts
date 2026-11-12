@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SUBURBS } from '../src/suburbs';
 import {
   UnknownSuburbError,
-  platformFeeCents,
   priceCents,
   type ServiceLevel,
 } from '../src/pricing';
@@ -51,20 +50,3 @@ describe('SUBURBS', () => {
   });
 });
 
-describe('platformFeeCents', () => {
-  const original = process.env.PLATFORM_FEE_CENTS;
-  afterEach(() => {
-    if (original === undefined) delete process.env.PLATFORM_FEE_CENTS;
-    else process.env.PLATFORM_FEE_CENTS = original;
-  });
-
-  it('defaults to 25', () => {
-    delete process.env.PLATFORM_FEE_CENTS;
-    expect(platformFeeCents()).toBe(25);
-  });
-
-  it('reads PLATFORM_FEE_CENTS', () => {
-    process.env.PLATFORM_FEE_CENTS = '15';
-    expect(platformFeeCents()).toBe(15);
-  });
-});

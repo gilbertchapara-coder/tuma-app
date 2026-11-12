@@ -1,4 +1,5 @@
-import { findSuburbEntry, type Run, type ServiceLevel } from './pricing';
+import { COUNTRIES, findSuburbEntryFor, type CountryConfig } from './countries';
+import type { Run, ServiceLevel } from './pricing';
 
 export interface BookedParcel {
   id: string;
@@ -43,7 +44,7 @@ const RUN_ORDER: Record<Run, number> = { north: 0, south: 1, southwest: 2 };
  * `cutoffAt` and every `bookedAt` must be ISO 8601; all dates are validated before
  * grouping, and an unparseable one throws InvalidDateError (no partial result).
  */
-export function bundleRuns(parcels: BookedParcel[], cutoffAt: string): Bundle[] {
+export function bundleRuns(parcels: BookedParcel[], cutoffAt: string, country: CountryConfig = COUNTRIES.ZW): Bundle[] {
   const cutoff = parseDate('cutoffAt', cutoffAt);
   const bookedTimes = parcels.map((parcel) => parseDate('bookedAt', parcel.bookedAt));
   const groups = new Map<string, { run: Run; level: PoolLevel; ids: string[]; drops: Map<string, number> }>();
@@ -51,7 +52,7 @@ export function bundleRuns(parcels: BookedParcel[], cutoffAt: string): Bundle[] 
   for (const [index, parcel] of parcels.entries()) {
     if (parcel.level === 'express') continue;
     if ((bookedTimes[index] as number) > cutoff) continue;
-    const { name, suburb } = findSuburbEntry(parcel.suburb);
+    const { name, suburb } = findSuburbEntryFor(country, parcel.suburb);
     const key = `${suburb.run}|${parcel.level}`;
     let group = groups.get(key);
     if (!group) {

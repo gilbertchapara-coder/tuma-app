@@ -1,5 +1,3 @@
-import { platformFeeCents } from './pricing';
-
 export type EntryType = 'topup' | 'fee' | 'fee_refund' | 'deposit_hold' | 'loss_payout' | 'loss_settled';
 
 /** Which pot a loss_payout drew from. Absent means the float. */
@@ -91,15 +89,17 @@ export function holdDeposit(entries: readonly Entry[], cents: number, at: string
   return [...entries, { type: 'deposit_hold', cents, at }];
 }
 
-/** Charges the platform fee once per job. A repeat call returns the same entries. */
-export function chargeFee(entries: readonly Entry[], jobId: string, at: string): Entry[] {
+/**
+ * Takes Tuma's share from the float, once per job. `feeCents` is the percentage of the run price,
+ * worked out by the caller (see percentFeeCents). A zero fee writes nothing. A repeat call returns the same entries.
+ */
+export function chargeFee(entries: readonly Entry[], jobId: string, at: string, feeCents: number): Entry[] {
   if (find(entries, 'fee', jobId)) return entries as Entry[];
-  const fee = platformFeeCents();
-  if (fee === 0) return entries as Entry[];
-  assertCents(fee);
+  if (feeCents === 0) return entries as Entry[];
+  assertCents(feeCents);
   const available = balanceCents(entries);
-  if (available < fee) throw new InsufficientFloatError(fee, available);
-  return [...entries, { type: 'fee', cents: fee, at, jobId }];
+  if (available < feeCents) throw new InsufficientFloatError(feeCents, available);
+  return [...entries, { type: 'fee', cents: feeCents, at, jobId }];
 }
 
 /** Refunds a charged fee once. Whether a refund is allowed is the caller's decision. */
