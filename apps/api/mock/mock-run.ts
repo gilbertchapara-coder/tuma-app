@@ -79,6 +79,9 @@ async function main(): Promise<void> {
     authRateLimitPerMinute: 100_000,
     topupProvider: new FakeTopupProvider(),
     weatherProvider: clearSkyProvider,
+    researchProvider: { search: async () => [{ title: 'MOCK: Glovo launches in Lusaka', url: 'https://example.com/mock', source: 'Mock News', publishedAt: null, summary: '' }] },
+    researchTopics: ['mock topic'],
+    researchMinGapMs: 0,
   });
   await app.ready();
 
@@ -177,6 +180,26 @@ async function main(): Promise<void> {
     check('after delivery the rider can go home', back.status === 200);
     const home = await call('GET', '/riders/me', rider.token);
     check('Zimbabwe float untouched by the Zambian ride', home.json.balanceCents === 2500 - fees, JSON.stringify(home.json));
+
+    step('2b. The phone reports its position (automatic country change)');
+    const LUSAKA = { lat: -15.4167, lng: 28.2833 };
+    const det1 = await call('POST', '/me/country/detect', rider.token, LUSAKA);
+    check('GPS in Lusaka moves the rider to Zambia (kwacha)', det1.json.changed === true && det1.json.country?.currencySymbol === 'K', JSON.stringify(det1.json));
+    check('GPS in Lusaka again changes nothing', (await call('POST', '/me/country/detect', rider.token, LUSAKA)).json.reason === 'same_country');
+    const det3 = await call('POST', '/me/country/detect', rider.token, { lat: -17.93, lng: 25.85 });
+    check('GPS at the border (Victoria Falls) is unclear and changes nothing', det3.json.changed === false && det3.json.reason === 'unclear', JSON.stringify(det3.json));
+    const det4 = await call('POST', '/me/country/detect', rider.token, { lat: -17.83, lng: 31.05 });
+    check('GPS in Harare moves the rider back to Zimbabwe ($)', det4.json.changed === true && det4.json.country?.currencySymbol === '$', JSON.stringify(det4.json));
+    check('a shop cannot use GPS country change', (await call('POST', '/me/country/detect', shop.token, LUSAKA)).status === 403);
+
+    step('2c. Intelligence layer (advisory only)');
+    const ins = await call('POST', '/admin/insights/refresh', admin);
+    check('research refresh stores items', ins.status === 200 && ins.json.added === 1, JSON.stringify(ins.json));
+    const insList = await call('GET', '/admin/insights', admin);
+    check('insights list is advisory and tagged', insList.json.advisoryOnly === true && insList.json.insights?.[0]?.tag === 'expansion', JSON.stringify(insList.json));
+    check('a rider cannot read insights', (await call('GET', '/admin/insights', rider.token)).status === 403);
+    const zwAfter = await call('GET', '/admin/countries', admin);
+    check('research changed no settings (ZW percentage still 20%)', JSON.stringify(zwAfter.json).includes('2000'), JSON.stringify(zwAfter.json).slice(0, 200));
 
     step('3. Support');
     const ref = (await call('GET', `/admin/codes/locked`, admin)).status;
