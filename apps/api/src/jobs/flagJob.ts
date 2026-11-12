@@ -68,7 +68,13 @@ interface LatLng {
 function plannedStops(rows: InFlight[]): LatLng[] {
   const stops: LatLng[] = [DEPOT];
   for (const r of rows) {
-    const centre = SUBURB_CENTRES[findSuburbEntry(r.suburb).name];
+    // A suburb with no known centre (a country that is still being set up) adds no stop.
+    let centre: LatLng | undefined;
+    try {
+      centre = SUBURB_CENTRES[findSuburbEntry(r.suburb).name];
+    } catch {
+      centre = undefined;
+    }
     if (centre) stops.push(centre, DEPOT);
   }
   return stops;

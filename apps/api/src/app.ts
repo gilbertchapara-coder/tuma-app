@@ -16,6 +16,14 @@ import { parcelRoutes } from './routes/parcels';
 import { photoRoutes } from './routes/photos';
 import { riderRoutes } from './routes/riders';
 import { topupRoutes } from './routes/topup';
+import { weatherRoutes } from './routes/weather';
+import { boardRoutes } from './routes/board';
+import { messageRoutes } from './routes/messages';
+import { loanRoutes } from './routes/loans';
+import { meRoutes } from './routes/me';
+import { adminRoutes } from './routes/admin';
+import { createWeatherService, clearSkyProvider, type WeatherProvider, type WeatherService } from './weather/provider';
+import { noLendingPartner, type LendingPartner } from './lending/partner';
 import { smokeTestRoutes, type SmokeTestOptions } from './smokeTestSms';
 import { DEFAULT_TOPUP_MAX_BALANCE_CENTS, DEFAULT_TOPUP_MAX_SINGLE_CENTS, noWalletProvider, type TopupProvider } from './topup/provider';
 
@@ -41,6 +49,10 @@ export interface AppOptions {
   topupMaxSingleCents?: number;
   /** Largest rider float in cents. Default $50 (pilot placeholder). */
   topupMaxBalanceCents?: number;
+  /** Forecast source for the rain extra. Default: clear sky (no extra). */
+  weatherProvider?: WeatherProvider;
+  /** Licensed lending partner. Default: none connected, loans answer "not available yet". */
+  lendingPartner?: LendingPartner;
   /** TEST ONLY. Registers GET /smoke-test/code/:phone; leave unset in production use. */
   smokeTest?: SmokeTestOptions;
   /** Web page origins allowed to read the API from a browser (read-only: GET/HEAD). Empty means none. */
@@ -59,6 +71,8 @@ export interface Deps {
   topupProvider: TopupProvider;
   topupMaxSingleCents: number;
   topupMaxBalanceCents: number;
+  weather: WeatherService;
+  lendingPartner: LendingPartner;
 }
 
 const DEFAULT_OTP_COOLDOWN_MS = 30_000;
@@ -78,6 +92,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     topupProvider: opts.topupProvider ?? noWalletProvider,
     topupMaxSingleCents: opts.topupMaxSingleCents ?? DEFAULT_TOPUP_MAX_SINGLE_CENTS,
     topupMaxBalanceCents: opts.topupMaxBalanceCents ?? DEFAULT_TOPUP_MAX_BALANCE_CENTS,
+    weather: createWeatherService(opts.weatherProvider ?? clearSkyProvider),
+    lendingPartner: opts.lendingPartner ?? noLendingPartner,
   };
 
   const app = Fastify({
@@ -131,6 +147,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(claimRoutes(deps));
   await app.register(locationRoutes(deps));
   await app.register(metricsRoutes(deps));
+  await app.register(weatherRoutes(deps));
+  await app.register(boardRoutes(deps));
+  await app.register(messageRoutes(deps));
+  await app.register(loanRoutes(deps));
+  await app.register(meRoutes(deps));
+  await app.register(adminRoutes(deps));
   if (opts.smokeTest) await app.register(smokeTestRoutes(opts.smokeTest));
   bindFlagJobPool(deps.pool);
   return app;

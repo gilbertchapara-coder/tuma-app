@@ -1,10 +1,19 @@
 import { randomBytes } from 'node:crypto';
 import {
   appendEvent,
-  findSuburbEntry,
+  checkCode,
+  distanceExtraCents,
+  distanceKm,
+  MAX_CODE_ATTEMPTS,
+  type CodeRecord,
+  findSuburbEntryFor,
+  isCountryConfigured,
+  type CountryCode,
+  type CountryConfig,
   IllegalTransitionError,
   issueCode,
-  priceCents,
+  MIN_ASK_CENTS,
+  quoteWithWeather,
   refundFee,
   riderTier,
   depositCents,
@@ -18,21 +27,24 @@ import type { Deps } from '../app';
 import { requireRole, userOf, type Role } from '../auth';
 import { withTx } from '../db';
 import { HttpError } from '../errors';
-import { insertEntries, insertEvent, loadEntries, loadEvents, lockRider } from '../repo';
+import { AUCTION_WINDOW_MINUTES } from '../dispatch';
+import { countryConfig, insertEntries, insertEvent, loadEntries, loadEvents, lockRider, userCountry } from '../repo';
 import { assertOwnPhoto } from './photos';
 import { centsSchema, httpsUrl, parse, phoneSchema, uuidParam } from '../validate';
 
 const TRACK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_VALUE_CENTS = 100_000_00;
 
-const suburbSchema = z.string().max(80).transform((s, ctx) => {
+const suburbSchema = z.string().trim().min(1).max(80);
+
+/** Matches a typed suburb against the country's table, or refuses with the same message as before. */
+const resolveSuburb = (cfg: CountryConfig, typed: string, field: string): string => {
   try {
-    return findSuburbEntry(s).name;
+    return findSuburbEntryFor(cfg, typed).name;
   } catch {
-    ctx.issues.push({ code: 'custom', message: 'Unknown suburb. Check the spelling against the delivery areas.', input: s });
-    return z.NEVER;
+    throw new HttpError(400, 'validation', `${field}: Unknown suburb. Check the spelling against the delivery areas.`);
   }
-});
+};
 
 const bookingBody = z
   .object({
@@ -43,11 +55,38 @@ const bookingBody = z
     recipientPhone: phoneSchema,
     recipientPhoneConfirm: phoneSchema,
     sealedPhotoUrl: httpsUrl.optional(),
+    dispatch: z.enum(['fixed', 'first', 'cheapest']).default('fixed'),
+    maxPriceCents: centsSchema.optional(),
+    // Collect from another place first. The suburb prices the trip; lat and lng are an optional pin for the rider.
+    pickup: z
+      .object({
+        suburb: suburbSchema,
+        note: z.string().trim().max(200).optional(),
+        lat: z.number().min(-90).max(90).optional(),
+        lng: z.number().min(-180).max(180).optional(),
+      })
+      .strict()
+      .refine((p) => (p.lat === undefined) === (p.lng === undefined), { message: 'lat and lng go together' })
+      .optional(),
+    // Where the parcel goes, as a pin. With a pickup pin too, the straight-line distance adds a (placeholder) long-trip charge.
+    dropoff: z
+      .object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) })
+      .strict()
+      .optional(),
+    payMethod: z.enum(['cash', 'mobile_money']).default('cash'),
   })
   .strict()
   .refine((b) => b.recipientPhone === b.recipientPhoneConfirm, {
     path: ['recipientPhoneConfirm'],
     message: 'does not match recipientPhone',
+  })
+  .refine((b) => b.dispatch === 'fixed' || b.level === 'express', {
+    path: ['dispatch'],
+    message: 'only Express parcels can use First rider or Cheapest rider',
+  })
+  .refine((b) => (b.dispatch === 'cheapest') === (b.maxPriceCents !== undefined), {
+    path: ['maxPriceCents'],
+    message: 'is needed for Cheapest rider and not allowed otherwise',
   });
 
 const EVENT_TYPES = [
@@ -61,7 +100,9 @@ const EVENT_TYPES = [
   'cancelled',
 ] as const satisfies readonly EventType[];
 
-const eventBody = z.object({ type: z.enum(EVENT_TYPES), photoUrl: httpsUrl.optional() }).strict();
+const eventBody = z
+  .object({ type: z.enum(EVENT_TYPES), photoUrl: httpsUrl.optional(), pickupCode: z.string().regex(/^[0-9]{6}$/, 'must be the 6 digit pickup code').optional() })
+  .strict();
 
 /** Which events each role may record through the API. Delivery is only possible with the code. */
 const ROLE_EVENTS: Record<Role, readonly EventType[]> = {
@@ -91,6 +132,10 @@ function statusOf(last: EventType): string {
 }
 
 const MAX_LOCK_RETRIES = 3;
+interface CodeRefusal {
+  refused: 'wrong' | 'locked';
+  attemptsLeft: number;
+}
 /** States in which the parcel is not yet in the rider's hands, so shop or admin may still end it. */
 const BEFORE_PICKUP: readonly EventType[] = ['booked', 'sealed', 'refused_by_rider'];
 
@@ -101,14 +146,14 @@ const BEFORE_PICKUP: readonly EventType[] = ['booked', 'sealed', 'refused_by_rid
 async function recordEvent(
   tx: pg.PoolClient,
   id: string,
-  body: { type: EventType; photoUrl?: string | undefined },
+  body: { type: EventType; photoUrl?: string | undefined; pickupCode?: string | undefined },
   user: { id: string; role: Role },
-): Promise<boolean> {
-  const peek = (await tx.query('SELECT shop_id, rider_id FROM parcels WHERE id = $1', [id])).rows[0];
+): Promise<boolean | CodeRefusal> {
+  const peek = (await tx.query('SELECT shop_id, rider_id, country FROM parcels WHERE id = $1', [id])).rows[0];
   if (!peek || (user.role === 'shop' && peek.shop_id !== user.id)) throw new HttpError(404, 'not_found', 'Parcel not found');
 
   const refunding = body.type === 'cancelled' && user.role !== 'rider' && peek.rider_id !== null;
-  const locked = refunding ? await lockRider(tx, peek.rider_id) : undefined;
+  const locked = refunding ? await lockRider(tx, peek.rider_id, peek.country as CountryCode) : undefined;
 
   const p = (await tx.query('SELECT rider_id FROM parcels WHERE id = $1 FOR UPDATE', [id])).rows[0];
   if (p.rider_id !== peek.rider_id) return false;
@@ -133,12 +178,24 @@ async function recordEvent(
     if (err instanceof IllegalTransitionError) throw new HttpError(409, 'illegal_transition', err.message);
     throw err;
   }
+  // A pickup from a third-party address needs the sender's one-time code. Wrong tries are saved, then refused.
+  if (body.type === 'pickup_confirmed') {
+    const row = (await tx.query('SELECT hash, salt, failed_attempts, used, locked FROM pickup_codes WHERE parcel_id = $1 FOR UPDATE', [id])).rows[0];
+    if (row) {
+      const record: CodeRecord = { hash: row.hash, salt: row.salt, failedAttempts: row.failed_attempts, used: row.used, locked: row.locked };
+      if (record.locked) return { refused: 'locked', attemptsLeft: 0 };
+      if (!body.pickupCode) throw new HttpError(400, 'validation', 'pickupCode: ask the sender for the 6 digit pickup code');
+      const result = checkCode(record, body.pickupCode);
+      await tx.query('UPDATE pickup_codes SET failed_attempts = $2, used = $3, locked = $4 WHERE parcel_id = $1', [id, result.record.failedAttempts, result.record.used, result.record.locked]);
+      if (!result.ok) return { refused: result.record.locked ? 'locked' : 'wrong', attemptsLeft: Math.max(0, MAX_CODE_ATTEMPTS - result.record.failedAttempts) };
+    }
+  }
   await insertEvent(tx, id, next);
 
   if (locked) {
     // Refunds the fee only if one was charged for this parcel, and only once (core refundFee is idempotent).
     const after = refundFee(locked.entries, id, at);
-    await insertEntries(tx, peek.rider_id, after.slice(locked.entries.length));
+    await insertEntries(tx, peek.rider_id, after.slice(locked.entries.length), peek.country as CountryCode);
   }
   return true;
 }
@@ -153,15 +210,34 @@ export const parcelRoutes =
       const b = parse(bookingBody, req.body);
       const shopId = userOf(req).id;
       const sealedPhotoUrl = b.sealedPhotoUrl ? await assertOwnPhoto(deps.pool, deps.publicBaseUrl, b.sealedPhotoUrl, shopId, 'sealedPhotoUrl') : undefined;
-      const price = priceCents(b.suburb, b.level);
+      const country = await userCountry(deps.pool, shopId);
+      const cfg = await countryConfig(deps.pool, country);
+      if (!isCountryConfigured(cfg)) throw new HttpError(409, 'country_not_open', `Tuma is not taking bookings in ${cfg.name} yet`);
+      const dropSuburb = resolveSuburb(cfg, b.suburb, 'suburb');
+      const pickupSuburb = b.pickup ? resolveSuburb(cfg, b.pickup.suburb, 'pickup.suburb') : null;
+      const weatherNow = await deps.weather.current();
+      const dropQuote = quoteWithWeather(dropSuburb, b.level, weatherNow, cfg);
+      // PLACEHOLDER pricing for pickup requests: the dearer of the pickup and delivery suburbs on the table.
+      const pickupQuote = pickupSuburb ? quoteWithWeather(pickupSuburb, b.level, weatherNow, cfg) : dropQuote;
+      const base = pickupQuote.totalCents > dropQuote.totalCents ? pickupQuote : dropQuote;
+      const pin = b.pickup?.lat !== undefined && b.pickup.lng !== undefined ? { lat: b.pickup.lat, lng: b.pickup.lng } : null;
+      const km = pin && b.dropoff ? distanceKm(pin, b.dropoff) : null;
+      const distanceCents = km === null ? 0 : distanceExtraCents(km);
+      const quote = { ...base, totalCents: base.totalCents + distanceCents };
+      if (b.maxPriceCents !== undefined && (b.maxPriceCents < MIN_ASK_CENTS || b.maxPriceCents > quote.totalCents * 2)) {
+        throw new HttpError(400, 'validation', `maxPriceCents: must be between ${MIN_ASK_CENTS} and ${quote.totalCents * 2}`);
+      }
+      // The rain extra is locked here. With Cheapest rider the price starts at the most the shop will pay.
+      const price = b.maxPriceCents ?? quote.totalCents;
       const token = randomBytes(32).toString('base64url');
       const { code, record } = issueCode();
+      const pickupIssue = b.pickup ? issueCode() : null;
 
       const parcelId = await withTx(deps.pool, async (tx) => {
         const ins = await tx.query(
-          `INSERT INTO parcels (shop_id, suburb, level, value_cents, contents, recipient_phone, price_cents, track_token)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-          [shopId, b.suburb, b.level, b.valueCents, b.contents, b.recipientPhone, price, token],
+          `INSERT INTO parcels (shop_id, suburb, level, value_cents, contents, recipient_phone, price_cents, track_token, weather_cents, dispatch_mode, max_price_cents, pickup_suburb, pickup_note, pickup_lat, pickup_lng, pay_method, drop_lat, drop_lng, distance_km, distance_cents, country)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING id`,
+          [shopId, dropSuburb, b.level, b.valueCents, b.contents, b.recipientPhone, price, token, quote.surchargeCents, b.dispatch, b.maxPriceCents ?? null, pickupSuburb, b.pickup?.note ?? null, b.pickup?.lat ?? null, b.pickup?.lng ?? null, b.payMethod, b.dropoff?.lat ?? null, b.dropoff?.lng ?? null, km, distanceCents, country],
         );
         const id = ins.rows[0].id as string;
 
@@ -177,13 +253,18 @@ export const parcelRoutes =
           record.salt,
         ]);
 
+        if (pickupIssue) {
+          await tx.query('INSERT INTO pickup_codes (parcel_id, hash, salt) VALUES ($1, $2, $3)', [id, pickupIssue.record.hash, pickupIssue.record.salt]);
+        }
+
         if (b.level === 'express') {
           // Express never pools: a one-parcel job so riders accept it the same way as a bundle.
-          const run = findSuburbEntry(b.suburb).suburb.run;
-          const bundle = await tx.query(`INSERT INTO bundles (run, level, drop_order) VALUES ($1, 'express', $2::jsonb) RETURNING id`, [
-            run,
-            JSON.stringify([b.suburb]),
-          ]);
+          const run = findSuburbEntryFor(cfg, pickupSuburb ?? dropSuburb).suburb.run;
+          const bundle = await tx.query(
+            `INSERT INTO bundles (run, level, drop_order, dispatch_mode, ceiling_cents, auction_ends_at, country)
+             VALUES ($1, 'express', $2::jsonb, $3, $4, CASE WHEN $3 = 'cheapest' THEN now() + $5 * interval '1 minute' END, $6) RETURNING id`,
+            [run, JSON.stringify([dropSuburb]), b.dispatch, b.dispatch === 'fixed' ? null : price, AUCTION_WINDOW_MINUTES, country],
+          );
           await tx.query('INSERT INTO bundle_parcels (bundle_id, parcel_id) VALUES ($1, $2)', [bundle.rows[0].id, id]);
         }
 
@@ -195,13 +276,14 @@ export const parcelRoutes =
         return id;
       });
 
-      return reply.status(201).send({ parcelId, priceCents: price, trackingUrl: trackingUrl(token) });
+      return reply.status(201).send({ parcelId, country, currency: cfg.currency, currencySymbol: cfg.currencySymbol, priceCents: price, weatherCents: quote.surchargeCents, dispatch: b.dispatch, payMethod: b.payMethod, ...(km !== null ? { distanceKm: km, distanceCents } : {}), trackingUrl: trackingUrl(token), ...(pickupIssue ? { pickupCode: pickupIssue.code } : {}) });
     });
 
     app.get('/parcels', { preHandler: shop }, async (req) => {
       const { rows } = await deps.pool.query(
         `SELECT p.id, p.suburb, p.level, p.value_cents, p.contents, p.price_cents, p.created_at,
-                (SELECT e.type FROM custody_events e WHERE e.parcel_id = p.id ORDER BY e.id DESC LIMIT 1) AS last_event
+                (SELECT e.type FROM custody_events e WHERE e.parcel_id = p.id ORDER BY e.id DESC LIMIT 1) AS last_event,
+                EXISTS (SELECT 1 FROM pickup_codes c WHERE c.parcel_id = p.id AND NOT c.used) AS pickup_code_open
          FROM parcels p WHERE p.shop_id = $1 ORDER BY p.created_at DESC LIMIT 200`,
         [userOf(req).id],
       );
@@ -213,11 +295,40 @@ export const parcelRoutes =
           valueCents: r.value_cents,
           contents: r.contents,
           priceCents: r.price_cents,
+          ...(r.pickup_code_open && r.last_event !== 'pickup_confirmed' ? { pickupCodeOpen: true } : {}),
           createdAt: r.created_at.toISOString(),
           stage: STAGE[r.last_event as EventType],
           status: statusOf(r.last_event),
         })),
       };
+    });
+
+    // A lost pickup code: the owner may get a fresh one until the rider has collected. Locked codes need Tuma support.
+    app.post('/parcels/:id/pickup-code/reissue', { preHandler: shop }, async (req) => {
+      const { id } = parse(uuidParam, req.params);
+      const owner = userOf(req).id;
+      return withTx(deps.pool, async (tx) => {
+        const p = (await tx.query('SELECT shop_id FROM parcels WHERE id = $1 FOR UPDATE', [id])).rows[0];
+        if (!p || p.shop_id !== owner) throw new HttpError(404, 'not_found', 'Parcel not found');
+        const row = (await tx.query('SELECT used, locked FROM pickup_codes WHERE parcel_id = $1 FOR UPDATE', [id])).rows[0];
+        if (!row) throw new HttpError(409, 'no_pickup_code', 'This parcel has no pickup code');
+        const events = await loadEvents(tx, id);
+        if (row.used || events.some((e) => e.type === 'pickup_confirmed')) throw new HttpError(409, 'already_collected', 'The rider has already collected this parcel');
+        if (row.locked) throw new HttpError(423, 'code_locked', 'Too many wrong codes. Contact Tuma support to unlock it.');
+        const fresh = issueCode();
+        await tx.query('UPDATE pickup_codes SET hash = $2, salt = $3, failed_attempts = 0 WHERE parcel_id = $1', [id, fresh.record.hash, fresh.record.salt]);
+        return { pickupCode: fresh.code };
+      });
+    });
+
+    // Tuma support: clear a lock after checking who is at the door. Attempts reset; a used code stays used.
+    app.post('/admin/parcels/:id/unlock', { preHandler: requireRole(deps.jwtSecret, 'admin') }, async (req) => {
+      const { id } = parse(uuidParam, req.params);
+      const { which } = parse(z.object({ which: z.enum(['pickup', 'delivery']) }).strict(), req.body);
+      const table = which === 'pickup' ? 'pickup_codes' : 'delivery_codes';
+      const done = await deps.pool.query(`UPDATE ${table} SET failed_attempts = 0, locked = false WHERE parcel_id = $1 AND NOT used`, [id]);
+      if (!done.rowCount) throw new HttpError(404, 'not_found', 'No unused code to unlock for that parcel');
+      return { unlocked: true };
     });
 
     app.get('/parcels/:id', { preHandler: shop }, async (req) => {
@@ -265,6 +376,10 @@ export const parcelRoutes =
         // if so, start over so the rider row is always locked before the parcel row.
         for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt += 1) {
           const done = await withTx(deps.pool, (tx) => recordEvent(tx, id, body, user));
+          if (typeof done === 'object') {
+            if (done.refused === 'locked') throw new HttpError(423, 'code_locked', 'Too many wrong codes. This pickup is locked, contact Tuma support.');
+            throw new HttpError(403, 'invalid_code', 'That pickup code is wrong', { attemptsLeft: done.attemptsLeft });
+          }
           if (done) return reply.status(201).send({ ok: true });
         }
         throw new HttpError(409, 'busy', 'The parcel changed while recording this event, try again');
@@ -275,7 +390,7 @@ export const parcelRoutes =
       const { token } = req.params as { token: string };
       if (!TRACK_TOKEN.test(token)) throw new HttpError(404, 'not_found', 'Tracking link not found');
       const { rows } = await deps.pool.query(
-        `SELECT p.id, p.suburb, p.recipient_phone, p.rider_id, u.first_name FROM parcels p LEFT JOIN users u ON u.id = p.rider_id WHERE p.track_token = $1`,
+        `SELECT p.id, p.suburb, p.country, p.recipient_phone, p.rider_id, u.first_name FROM parcels p LEFT JOIN users u ON u.id = p.rider_id WHERE p.track_token = $1`,
         [token],
       );
       const p = rows[0];
@@ -288,7 +403,7 @@ export const parcelRoutes =
         const r = await deps.pool.query('SELECT verified, has_guarantor, clean_deliveries, rating FROM riders WHERE user_id = $1', [p.rider_id]);
         const row = r.rows[0];
         if (row) {
-          const entries = await loadEntries(deps.pool, p.rider_id);
+          const entries = await loadEntries(deps.pool, p.rider_id, p.country as CountryCode);
           const tier = riderTier({
             verified: row.verified,
             hasGuarantor: row.has_guarantor,
@@ -303,7 +418,7 @@ export const parcelRoutes =
         status: statusOf(last),
         stage: STAGE[last],
         suburb: p.suburb,
-        run: findSuburbEntry(p.suburb).suburb.run,
+        run: findSuburbEntryFor(await countryConfig(deps.pool, p.country as CountryCode), p.suburb).suburb.run,
         phoneLast3: String(p.recipient_phone).slice(-3),
         rider,
         events: events.map((e) => ({ stage: STAGE[e.type], at: e.at })),

@@ -7,6 +7,8 @@ import { migrate } from '../src/db';
 import type { OtpProvider, CodeNotifier } from '../src/ports';
 import type { TopupProvider } from '../src/topup/provider';
 import { FakeTopupProvider } from '../src/topup/fakeProvider';
+import type { WeatherProvider } from '../src/weather/provider';
+import type { LendingPartner } from '../src/lending/partner';
 
 export const ADMIN_PHONE = '+263770000001';
 
@@ -43,6 +45,10 @@ export async function createCtx(
     topupProvider?: TopupProvider;
     topupMaxSingleCents?: number;
     topupMaxBalanceCents?: number;
+    weatherProvider?: WeatherProvider;
+    lendingPartner?: LendingPartner;
+    /** Tuma's share in basis points for Zimbabwe. Tests default to 20% so fees are visible; pass null for none. */
+    platformBps?: number | null;
   } = {},
 ): Promise<TestCtx> {
   const adminUrl = inject('pgAdminUrl');
@@ -53,6 +59,8 @@ export async function createCtx(
   await admin.end();
   const pool = new pg.Pool({ connectionString: adminUrl.replace(/\/postgres$/, `/${dbName}`), max: 30 });
   await migrate(pool);
+  const bps = opts.platformBps === undefined ? 2000 : opts.platformBps;
+  if (bps !== null) await pool.query(`INSERT INTO country_settings (country, platform_bps) VALUES ('ZW', $1)`, [bps]);
   const otp = new FakeOtp();
   const notifier = new FakeNotifier();
   const app = await buildApp({
@@ -67,6 +75,8 @@ export async function createCtx(
     topupProvider: opts.topupProvider ?? new FakeTopupProvider(),
     topupMaxSingleCents: opts.topupMaxSingleCents,
     topupMaxBalanceCents: opts.topupMaxBalanceCents,
+    weatherProvider: opts.weatherProvider,
+    lendingPartner: opts.lendingPartner,
   });
   await app.ready();
 

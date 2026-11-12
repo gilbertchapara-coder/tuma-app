@@ -4,6 +4,7 @@ import { migrate } from './db';
 import type { CodeNotifier, OtpProvider } from './ports';
 import { startOtpFailurePurge } from './jobs/purgeOtpFailures';
 import { createSmokeTestSms } from './smokeTestSms';
+import { clearSkyProvider, openMeteoProvider } from './weather/provider';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -53,6 +54,8 @@ async function main(): Promise<void> {
     notifier: smoke ? smoke.notifier : consoleSms,
     smokeTest: smoke && smokeKey ? { key: smokeKey, sms: smoke } : undefined,
     jwtSecret,
+    // WEATHER=off turns the rain extra off (always clear). Only Harare's public coordinates are sent out.
+    weatherProvider: process.env.WEATHER === 'off' ? clearSkyProvider : openMeteoProvider(),
     trustProxy: trustProxyHops(),
     publicBaseUrl: required('PUBLIC_BASE_URL'),
     corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),

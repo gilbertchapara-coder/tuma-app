@@ -22,7 +22,7 @@ describe('GET /admin/metrics', () => {
   it('starts empty', async () => {
     const res = await metrics(await ctx.adminToken());
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ parcelsPerRun: [], ridersActive: 0, feesCents: 0 });
+    expect(res.json()).toEqual({ parcelsPerRun: [], ridersActive: 0, feesCents: 0, feesByCountry: [] });
   });
 
   it('counts parcels per run per day, from the suburb table', async () => {

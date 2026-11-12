@@ -73,6 +73,9 @@ async function main() {
   const shop = await signIn(SHOP, 'shop');
   const rider = await signIn(RIDER, 'rider');
 
+  // The fake rider may already hold float from an earlier run, so compare against the balance before top-up.
+  const before = await call('GET', '/riders/me', { token: rider.token });
+  const balanceBefore = before.json.balanceCents ?? 0;
   const profile = await call('PATCH', `/riders/${rider.id}/profile`, {
     token: admin.token,
     body: { verified: true, hasGuarantor: true, cleanDeliveries: 40, rating: 5 },
@@ -84,7 +87,7 @@ async function main() {
   check('admin held $20 deposit', dep.status === 200, JSON.stringify(dep.json));
   const me = await call('GET', '/riders/me', { token: rider.token });
   const startBalance = me.json.balanceCents;
-  check('rider is Trusted with float', me.json.tier === 'trusted' && startBalance === 500, JSON.stringify(me.json));
+  check('rider is Trusted with float', me.json.tier === 'trusted' && startBalance === balanceBefore + 500, JSON.stringify(me.json));
 
   // A bad booking is rejected, and three good ones are accepted.
   const bad = await call('POST', '/parcels', {
@@ -147,9 +150,20 @@ async function main() {
   }
 
   const after = await call('GET', '/riders/me', { token: rider.token });
-  check('rider was charged 3 x 25c', after.json.balanceCents === startBalance - 75, `${startBalance} -> ${after.json.balanceCents}`);
+  // Tuma's cut is a percentage set per country by the owner. Unset means no deduction yet.
+  const cfg = await call('GET', '/admin/countries', { token: admin.token });
+  const zw = (cfg.json.countries ?? []).find((c) => c.code === 'ZW');
+  const bps = zw?.platformBps ?? null;
+  const spent = startBalance - after.json.balanceCents;
+  check(bps === null ? 'no Tuma percentage set: rider not charged' : 'rider was charged the Tuma percentage', bps === null ? spent === 0 : spent > 0, `${startBalance} -> ${after.json.balanceCents} (bps ${bps})`);
   const metrics = await call('GET', '/admin/metrics', { token: admin.token });
   check('admin metrics respond', metrics.status === 200, String(metrics.status));
+
+  const webBase = (process.env.WEB_URL ?? '').replace(/\/+$/, '');
+  if (webBase) {
+    console.log('\nTracking pages for the delivered test parcels:');
+    for (const p of parcels) console.log(`  ${webBase}/track/${p.trackingUrl.split('/track/')[1]}`);
+  }
 
   console.log(`\nALL ${results.length} CHECKS PASSED in ${Math.round((Date.now() - t0) / 1000)}s`);
 }

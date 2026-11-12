@@ -15,6 +15,7 @@ import { withTx } from '../db';
 import { HttpError } from '../errors';
 import { runFlagJob } from '../jobs/flagJob';
 import { insertEntries, insertEvent, loadEvents, lockRider } from '../repo';
+import type { CountryCode } from '@tuma/core';
 import { parse, uuidParam } from '../validate';
 
 const MAX_LOCK_RETRIES = 3;
@@ -34,13 +35,14 @@ interface ParcelPeek {
   rider_id: string | null;
   value_cents: number;
   bundle_id: string | null;
+  country: string;
 }
 
 /** Files or settles a loss. Lock order: bundle, rider, parcel (delivery_codes is never touched). */
 async function reportLost(tx: pg.PoolClient, id: string, user: { id: string; role: Role }): Promise<Outcome> {
   const peek = (
     await tx.query<ParcelPeek>(
-      `SELECT p.shop_id, p.rider_id, p.value_cents, bp.bundle_id
+      `SELECT p.shop_id, p.rider_id, p.value_cents, p.country, bp.bundle_id
        FROM parcels p LEFT JOIN bundle_parcels bp ON bp.parcel_id = p.id WHERE p.id = $1`,
       [id],
     )
@@ -49,7 +51,7 @@ async function reportLost(tx: pg.PoolClient, id: string, user: { id: string; rol
   if (user.role === 'rider' && peek.rider_id !== user.id) throw new HttpError(403, 'forbidden', 'You have not accepted this parcel');
 
   if (peek.bundle_id) await tx.query('SELECT 1 FROM bundles WHERE id = $1 FOR UPDATE', [peek.bundle_id]);
-  const locked = peek.rider_id ? await lockRider(tx, peek.rider_id) : undefined;
+  const locked = peek.rider_id ? await lockRider(tx, peek.rider_id, peek.country as CountryCode) : undefined;
   const p = (await tx.query('SELECT rider_id FROM parcels WHERE id = $1 FOR UPDATE', [id])).rows[0];
   if (p.rider_id !== peek.rider_id) return { kind: 'retry' };
 
@@ -90,7 +92,7 @@ async function reportLost(tx: pg.PoolClient, id: string, user: { id: string; rol
   let payoutCents = 0;
   if (liable === 'rider' && locked && peek.rider_id) {
     const res = payoutLoss(locked.entries, id, peek.value_cents, at);
-    await insertEntries(tx, peek.rider_id, res.entries.slice(locked.entries.length));
+    await insertEntries(tx, peek.rider_id, res.entries.slice(locked.entries.length), peek.country as CountryCode);
     payoutCents = res.paidCents;
     if (res.shortfallCents > 0) await tx.query(`UPDATE riders SET status = 'removed' WHERE user_id = $1`, [peek.rider_id]);
   }

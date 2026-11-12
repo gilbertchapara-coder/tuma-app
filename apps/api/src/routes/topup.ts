@@ -5,11 +5,11 @@ import type { Deps } from '../app';
 import { requireRole, userOf } from '../auth';
 import { withTx } from '../db';
 import { HttpError } from '../errors';
-import { insertEntries, lockRider } from '../repo';
+import { formatMoney } from '@tuma/core';
+import { countryConfig, insertEntries, lockRider, userCountry } from '../repo';
 import { centsSchema, parse } from '../validate';
 
 const body = z.object({ cents: centsSchema }).strict();
-const dollars = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
 
 export const topupRoutes =
   (deps: Deps): FastifyPluginAsync =>
@@ -19,10 +19,13 @@ export const topupRoutes =
     app.post('/riders/me/topup', { preHandler: rider }, async (req, reply) => {
       const user = userOf(req);
       const { cents } = parse(body, req.body);
+      const country = await userCountry(deps.pool, user.id);
+      const symbol = (await countryConfig(deps.pool, country)).currencySymbol;
+      const dollars = (c: number): string => formatMoney({ currencySymbol: symbol }, c);
       if (cents > deps.topupMaxSingleCents) {
         throw new HttpError(422, 'topup_too_large', `You can top up at most ${dollars(deps.topupMaxSingleCents)} at a time`);
       }
-      const current = balanceCents((await withTx(deps.pool, (tx) => lockRider(tx, user.id))).entries);
+      const current = balanceCents((await withTx(deps.pool, (tx) => lockRider(tx, user.id, country))).entries);
       if (current + cents > deps.topupMaxBalanceCents) {
         throw new HttpError(422, 'balance_too_large', `Your float cannot go above ${dollars(deps.topupMaxBalanceCents)}`);
       }
@@ -42,12 +45,12 @@ export const topupRoutes =
 
       // Re-check the cap inside the transaction: the balance may have moved while we waited on the provider.
       return withTx(deps.pool, async (tx) => {
-        const { entries } = await lockRider(tx, user.id);
+        const { entries } = await lockRider(tx, user.id, country);
         if (balanceCents(entries) + cents > deps.topupMaxBalanceCents) {
           throw new HttpError(422, 'balance_too_large', `Your float cannot go above ${dollars(deps.topupMaxBalanceCents)}`);
         }
         const next = topup(entries, cents, new Date().toISOString());
-        await insertEntries(tx, user.id, next.slice(entries.length));
+        await insertEntries(tx, user.id, next.slice(entries.length), country);
         return { ok: true, status: 'confirmed', ref };
       });
     });

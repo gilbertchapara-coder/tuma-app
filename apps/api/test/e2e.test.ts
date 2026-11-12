@@ -11,7 +11,7 @@ afterAll(async () => ctx.close());
 const SUBURBS = ['Mbare', 'Workington', 'Houghton Park'];
 
 describe('pilot flow: South-West run, 3 Standard parcels', () => {
-  it('books, bundles, accepts, picks up, delivers with codes, charges 3 x 25c', async () => {
+  it('books, bundles, accepts, picks up, delivers with codes, charges 3 x 24c', async () => {
     const shop = await ctx.signIn('+263771900001', 'shop');
     // A Trusted rider: verified, guarantor, $20 deposit, 30+ clean deliveries, rating 5, $5 float.
     const rider = await makeRider(ctx, '+263773900001', { cleanDeliveries: 40, topupCents: 500 });
@@ -19,7 +19,7 @@ describe('pilot flow: South-West run, 3 Standard parcels', () => {
     expect(summary.json()).toMatchObject({ tier: 'trusted', balanceCents: 500, depositCents: 2000 });
 
     // Shop books 3 Standard parcels, each to a different South-West suburb.
-    const parcels: Array<{ parcelId: string; trackingUrl: string; phone: string; suburb: string }> = [];
+    const parcels: Array<{ parcelId: string; priceCents: number; trackingUrl: string; phone: string; suburb: string }> = [];
     for (const [i, suburb] of SUBURBS.entries()) {
       const phone = `+26377190${String(1000 + i)}`;
       const p = await book(ctx, shop.token, {
@@ -82,13 +82,14 @@ describe('pilot flow: South-West run, 3 Standard parcels', () => {
       expect(liableParty(events)).toBe('recipient');
     }
 
-    // Ledger: exactly 3 fees of 25 cents, one per parcel; float 500 - 75 = 425.
+    // Ledger: exactly 3 fees, each 20% of its parcel price, one per parcel.
     const fees = await ctx.pool.query(`SELECT job_id, cents FROM ledger_entries WHERE rider_id = $1 AND type = 'fee'`, [
       rider.id,
     ]);
     expect(fees.rows).toHaveLength(3);
-    expect(fees.rows.every((f) => Number(f.cents) === 25)).toBe(true);
+    const expectedFees = parcels.map((p) => Math.round(p.priceCents * 0.2));
+    expect(fees.rows.map((f) => Number(f.cents)).sort()).toEqual([...expectedFees].sort());
     const after = await ctx.app.inject({ method: 'GET', url: '/riders/me', headers: auth(rider.token) });
-    expect(after.json().balanceCents).toBe(425);
+    expect(after.json().balanceCents).toBe(500 - expectedFees.reduce((a, b) => a + b, 0));
   });
 });

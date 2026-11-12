@@ -1,4 +1,5 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { countryFromPhone } from '@tuma/core';
 import rateLimit from '@fastify/rate-limit';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
@@ -20,6 +21,8 @@ const verifyBody = z
     phone: phoneSchema,
     code: z.string().regex(/^[0-9]{6}$/, 'must be 6 digits'),
     role: z.enum(['shop', 'rider']).optional(),
+    // A sender who is not a shop signs up as a customer. Same booking powers, different label.
+    kind: z.enum(['shop', 'customer']).optional(),
   })
   .strict();
 
@@ -36,6 +39,8 @@ export const authRoutes =
 
     app.post('/auth/otp/request', async (req) => {
       const { phone } = parse(requestBody, req.body);
+      // A valid number is one from a country Tuma works in. Its dial code decides the country on sign-in.
+      if (!countryFromPhone(phone)) throw new HttpError(400, 'unsupported_country', 'Tuma is not available for this phone number yet');
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       const hash = hashOtp(deps.jwtSecret, phone, code).toString('hex');
       const cooldown = deps.otpCooldownMs;
@@ -104,17 +109,19 @@ export const authRoutes =
         await tx.query('DELETE FROM otp_failures WHERE phone = $1', [body.phone]);
         await tx.query('DELETE FROM otp_challenges WHERE phone = $1', [body.phone]);
 
-        const existing = await tx.query('SELECT id, role FROM users WHERE phone = $1', [body.phone]);
-        if (existing.rows[0]) return { ok: true as const, id: existing.rows[0].id as string, role: existing.rows[0].role as Role };
+        const existing = await tx.query('SELECT id, role, kind, country FROM users WHERE phone = $1', [body.phone]);
+        if (existing.rows[0]) return { ok: true as const, id: existing.rows[0].id as string, role: existing.rows[0].role as Role, kind: existing.rows[0].kind as string, country: existing.rows[0].country as string };
 
         const role: Role | undefined = deps.adminPhones.includes(body.phone) ? 'admin' : body.role;
         if (!role) throw new HttpError(400, 'validation', 'role: choose shop or rider to create an account');
-        const created = await tx.query('INSERT INTO users (phone, role) VALUES ($1, $2) RETURNING id', [body.phone, role]);
+        const kind = role === 'shop' ? (body.kind ?? 'shop') : 'shop';
+        const country = countryFromPhone(body.phone) ?? 'ZW';
+        const created = await tx.query('INSERT INTO users (phone, role, kind, country) VALUES ($1, $2, $3, $4) RETURNING id', [body.phone, role, kind, country]);
         const id = created.rows[0].id as string;
         if (role === 'rider') await tx.query('INSERT INTO riders (user_id) VALUES ($1)', [id]);
-        return { ok: true as const, id, role };
+        return { ok: true as const, id, role, kind, country };
       });
       if (!outcome.ok) throw invalidOtp();
-      return { token: issueToken(deps.jwtSecret, { id: outcome.id, role: outcome.role }), user: { id: outcome.id, role: outcome.role } };
+      return { token: issueToken(deps.jwtSecret, { id: outcome.id, role: outcome.role }), user: { id: outcome.id, role: outcome.role, kind: outcome.kind, country: outcome.country } };
     });
   };

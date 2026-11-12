@@ -99,7 +99,7 @@ describe('POST /bundles/:id/accept', () => {
     const built = await buildBundles(ctx);
     const bundle = built.find((b) => b.parcelIds.includes(ids[0] as string));
     expect(bundle?.parcelIds).toHaveLength(3);
-    const rider = await makeRider(ctx, '+263773400003', { topupCents: 60 }); // fee 25 each, 75 needed
+    const rider = await makeRider(ctx, '+263773400003', { topupCents: 60 }); // three fees at 20% of the price come to more than 60
     const res = await accept(bundle!.id, rider.token);
     expect(res.statusCode).toBe(402);
     expect(res.json().error).toBe('insufficient_float');
@@ -108,20 +108,22 @@ describe('POST /bundles/:id/accept', () => {
       method: 'POST',
       url: `/riders/${rider.id}/topup`,
       headers: auth(await ctx.adminToken()),
-      payload: { cents: 15 },
+      payload: { cents: 100 },
     });
     expect(topped.statusCode).toBe(200);
     expect((await accept(bundle!.id, rider.token)).statusCode).toBe(200);
     expect(await fees(rider.id)).toHaveLength(3);
     const me = await ctx.app.inject({ method: 'GET', url: '/riders/me', headers: auth(rider.token) });
-    expect(me.json()).toMatchObject({ tier: 'new', balanceCents: 0 });
+    const feeTotal = (await ctx.pool.query(`SELECT coalesce(sum(cents),0)::int AS n FROM ledger_entries WHERE rider_id = $1 AND type = 'fee'`, [rider.id])).rows[0].n as number;
+    expect(me.json()).toMatchObject({ tier: 'new', balanceCents: 160 - feeTotal });
   });
 
   it('one rider accepting several bundles at once cannot overspend the float', async () => {
-    const rider = await makeRider(ctx, '+263773500001', { topupCents: 50 }); // two fees only
     const parcels = await Promise.all(
       Array.from({ length: 5 }, () => book(ctx, shop.token, { suburb: 'Avenues', level: 'express', valueCents: 1000 })),
     );
+    const fee = Math.round(parcels[0]!.priceCents * 0.2);
+    const rider = await makeRider(ctx, '+263773500001', { topupCents: fee * 2 + 1 }); // two fees only
     const bundleIds = await Promise.all(parcels.map((p) => bundleOf(p.parcelId)));
     const results = await Promise.all(bundleIds.map((id) => accept(id, rider.token)));
     expect(results.filter((r) => r.statusCode === 200)).toHaveLength(2);

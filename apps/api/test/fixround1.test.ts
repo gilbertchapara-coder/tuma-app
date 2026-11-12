@@ -52,7 +52,7 @@ describe('1. accept vs cancel, refund', () => {
     const before = await balance(rider.id);
     expect((await event(p.parcelId, shop.token, 'cancelled')).statusCode).toBe(201);
     expect(await ledger(rider.id, 'fee_refund')).toBe(1);
-    expect(await balance(rider.id)).toBe(before + 25);
+    expect(await balance(rider.id)).toBe(before + Math.round(p.priceCents * 0.2));
     expect((await event(p.parcelId, shop.token, 'cancelled')).statusCode).toBe(409);
     expect(await ledger(rider.id, 'fee_refund')).toBe(1);
   });

@@ -54,7 +54,7 @@ describe('POST /parcels booking', () => {
     const res = await post(bookingBody({ suburb: 'Avenues', level: 'standard' }));
     expect(res.statusCode).toBe(201);
     const body = res.json();
-    expect(Object.keys(body).sort()).toEqual(['parcelId', 'priceCents', 'trackingUrl']);
+    expect(Object.keys(body).sort()).toEqual(['country', 'currency', 'currencySymbol', 'dispatch', 'parcelId', 'payMethod', 'priceCents', 'trackingUrl', 'weatherCents']);
     expect(body.priceCents).toBe(120);
     const token = body.trackingUrl.replace('https://tuma.test/track/', '');
     expect(token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
