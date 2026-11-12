@@ -8,6 +8,7 @@ import type { OtpProvider, CodeNotifier } from '../src/ports';
 import type { TopupProvider } from '../src/topup/provider';
 import { FakeTopupProvider } from '../src/topup/fakeProvider';
 import type { WeatherProvider } from '../src/weather/provider';
+import type { ResearchProvider } from '../src/intelligence/research';
 import type { LendingPartner } from '../src/lending/partner';
 
 export const ADMIN_PHONE = '+263770000001';
@@ -47,6 +48,9 @@ export async function createCtx(
     topupMaxBalanceCents?: number;
     weatherProvider?: WeatherProvider;
     lendingPartner?: LendingPartner;
+    researchProvider?: ResearchProvider;
+    researchTopics?: readonly string[];
+    researchMinGapMs?: number;
     /** Tuma's share in basis points for Zimbabwe. Tests default to 20% so fees are visible; pass null for none. */
     platformBps?: number | null;
   } = {},
@@ -77,6 +81,9 @@ export async function createCtx(
     topupMaxBalanceCents: opts.topupMaxBalanceCents,
     weatherProvider: opts.weatherProvider,
     lendingPartner: opts.lendingPartner,
+    researchProvider: opts.researchProvider,
+    researchTopics: opts.researchTopics,
+    researchMinGapMs: opts.researchMinGapMs,
   });
   await app.ready();
 

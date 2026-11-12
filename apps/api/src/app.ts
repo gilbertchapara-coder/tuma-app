@@ -22,6 +22,8 @@ import { messageRoutes } from './routes/messages';
 import { loanRoutes } from './routes/loans';
 import { meRoutes } from './routes/me';
 import { adminRoutes } from './routes/admin';
+import { insightRoutes } from './routes/insights';
+import { DEFAULT_TOPICS, type ResearchProvider } from './intelligence/research';
 import { createWeatherService, clearSkyProvider, type WeatherProvider, type WeatherService } from './weather/provider';
 import { noLendingPartner, type LendingPartner } from './lending/partner';
 import { smokeTestRoutes, type SmokeTestOptions } from './smokeTestSms';
@@ -57,6 +59,12 @@ export interface AppOptions {
   smokeTest?: SmokeTestOptions;
   /** Web page origins allowed to read the API from a browser (read-only: GET/HEAD). Empty means none. */
   corsOrigins?: string[];
+  /** Source for the intelligence layer (public news on similar apps). Unset means no research and no outside requests. */
+  researchProvider?: ResearchProvider;
+  /** Search words sent to the research source. Default: the fixed list in intelligence/research. */
+  researchTopics?: readonly string[];
+  /** Minimum gap between two research runs. Default 10 minutes. */
+  researchMinGapMs?: number;
 }
 
 export interface Deps {
@@ -73,6 +81,9 @@ export interface Deps {
   topupMaxBalanceCents: number;
   weather: WeatherService;
   lendingPartner: LendingPartner;
+  research: ResearchProvider | null;
+  researchTopics: readonly string[];
+  researchMinGapMs: number;
 }
 
 const DEFAULT_OTP_COOLDOWN_MS = 30_000;
@@ -94,6 +105,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     topupMaxBalanceCents: opts.topupMaxBalanceCents ?? DEFAULT_TOPUP_MAX_BALANCE_CENTS,
     weather: createWeatherService(opts.weatherProvider ?? clearSkyProvider),
     lendingPartner: opts.lendingPartner ?? noLendingPartner,
+    research: opts.researchProvider ?? null,
+    researchTopics: opts.researchTopics ?? DEFAULT_TOPICS,
+    researchMinGapMs: opts.researchMinGapMs ?? 10 * 60_000,
   };
 
   const app = Fastify({
@@ -153,6 +167,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(loanRoutes(deps));
   await app.register(meRoutes(deps));
   await app.register(adminRoutes(deps));
+  await app.register(insightRoutes(deps));
   if (opts.smokeTest) await app.register(smokeTestRoutes(opts.smokeTest));
   bindFlagJobPool(deps.pool);
   return app;

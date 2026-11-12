@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Dashboard, type Metrics } from './Dashboard';
 import type { ClaimsApi, Claim } from './ClaimsAdmin';
 import type { AdminCountry, CountriesApi } from './CountriesAdmin';
+import type { Insight, InsightsApi } from './InsightsAdmin';
 import type { LockedCodesApi, LockedParcel } from './LockedCodes';
 import { API_BASE } from './api';
 import { Track, loadTrack } from './Track';
@@ -48,11 +49,16 @@ const claimsApi: ClaimsApi = {
   },
 };
 
+const insightsApi: InsightsApi = {
+  list: () => adminCall<{ connected: boolean; insights: Insight[] }>('GET', '/admin/insights'),
+  refresh: () => adminCall<{ added: number; failedTopics: string[] }>('POST', '/admin/insights/refresh', {}),
+};
+
 function App() {
   const path = window.location.pathname;
   const track = /^\/track\/([A-Za-z0-9_-]+)$/.exec(path);
   if (track?.[1]) return <Track token={track[1]} load={loadTrack} />;
-  if (path === '/dashboard') return <Dashboard load={loadMetrics} codes={lockedCodesApi} countries={countriesApi} claims={claimsApi} />;
+  if (path === '/dashboard') return <Dashboard load={loadMetrics} codes={lockedCodesApi} countries={countriesApi} claims={claimsApi} insights={insightsApi} />;
   return <p className="note">Nothing here. Use the link you were sent.</p>;
 }
 

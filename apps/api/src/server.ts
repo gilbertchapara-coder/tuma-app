@@ -5,6 +5,7 @@ import type { CodeNotifier, OtpProvider } from './ports';
 import { startOtpFailurePurge } from './jobs/purgeOtpFailures';
 import { createSmokeTestSms } from './smokeTestSms';
 import { clearSkyProvider, openMeteoProvider } from './weather/provider';
+import { rssProvider } from './intelligence/research';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -61,6 +62,8 @@ async function main(): Promise<void> {
     jwtSecret,
     // WEATHER=off turns the rain extra off (always clear). Only Harare's public coordinates are sent out.
     weatherProvider: process.env.WEATHER === 'off' ? clearSkyProvider : openMeteoProvider(),
+    // INTEL=off turns the research layer off. It sends only fixed search words, never user data.
+    researchProvider: process.env.INTEL === 'off' ? undefined : rssProvider(),
     trustProxy: trustProxyHops(),
     publicBaseUrl: required('PUBLIC_BASE_URL'),
     corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),

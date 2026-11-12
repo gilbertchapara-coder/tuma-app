@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ClaimsAdmin, type ClaimsApi } from './ClaimsAdmin';
 import { CountriesAdmin, type CountriesApi } from './CountriesAdmin';
+import { InsightsAdmin, type InsightsApi } from './InsightsAdmin';
 import { LockedCodes, type LockedCodesApi } from './LockedCodes';
 import { runName } from './runNames';
 
@@ -23,6 +24,8 @@ interface DashboardProps {
   countries?: CountriesApi;
   /** Loss claims. Without it the Claims tab is not shown. */
   claims?: ClaimsApi;
+  /** Public news on similar apps. Without it the Insights tab is not shown. */
+  insights?: InsightsApi;
 }
 
 const money = (symbol: string, cents: number): string => `${symbol}${(cents / 100).toFixed(2)}`;
@@ -32,8 +35,8 @@ const feesText = (m: Metrics): string =>
     ? m.feesByCountry.map((f) => money(f.currencySymbol, f.cents)).join(' and ')
     : money('$', m.feesCents);
 
-export function Dashboard({ load, codes, countries, claims }: DashboardProps) {
-  const [tab, setTab] = useState<'numbers' | 'locked' | 'countries' | 'claims'>('numbers');
+export function Dashboard({ load, codes, countries, claims, insights }: DashboardProps) {
+  const [tab, setTab] = useState<'numbers' | 'locked' | 'countries' | 'claims' | 'insights'>('numbers');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -54,15 +57,16 @@ export function Dashboard({ load, codes, countries, claims }: DashboardProps) {
   return (
     <main className="card">
       <h1>Tuma pilot</h1>
-      {codes || countries || claims ? (
+      {codes || countries || claims || insights ? (
         <div role="tablist" aria-label="Dashboard sections" className="tabs">
           <button type="button" role="tab" aria-selected={tab === 'numbers'} onClick={() => setTab('numbers')}>Numbers</button>
           {codes ? <button type="button" role="tab" aria-selected={tab === 'locked'} onClick={() => setTab('locked')}>Locked codes</button> : null}
           {countries ? <button type="button" role="tab" aria-selected={tab === 'countries'} onClick={() => setTab('countries')}>Countries</button> : null}
           {claims ? <button type="button" role="tab" aria-selected={tab === 'claims'} onClick={() => setTab('claims')}>Claims</button> : null}
+          {insights ? <button type="button" role="tab" aria-selected={tab === 'insights'} onClick={() => setTab('insights')}>Insights</button> : null}
         </div>
       ) : null}
-      {codes && tab === 'locked' ? <LockedCodes api={codes} /> : countries && tab === 'countries' ? <CountriesAdmin api={countries} /> : claims && tab === 'claims' ? <ClaimsAdmin api={claims} /> : (
+      {codes && tab === 'locked' ? <LockedCodes api={codes} /> : countries && tab === 'countries' ? <CountriesAdmin api={countries} /> : claims && tab === 'claims' ? <ClaimsAdmin api={claims} /> : insights && tab === 'insights' ? <InsightsAdmin api={insights} /> : (
         <>
       <p className="summary">
         <strong>{metrics.ridersActive}</strong> riders active this week. <strong>{feesText(metrics)}</strong> in
